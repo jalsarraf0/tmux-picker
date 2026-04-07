@@ -3,6 +3,7 @@ pub mod app;
 pub mod input;
 pub mod session;
 pub mod tmux;
+pub mod ui;
 
 fn main() {
     println!("shell");
