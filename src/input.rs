@@ -1,0 +1,250 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::app::{App, Mode};
+
+/// Top-level dispatcher: route to the correct mode handler.
+pub fn handle_key(app: &mut App, key: KeyEvent) {
+    match app.mode {
+        Mode::Pick => handle_pick_key(app, key),
+        Mode::NewInput => handle_input_key(app, key),
+    }
+}
+
+/// Key handler for Pick mode.
+pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Ctrl+C → shell
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.shell(),
+
+        // Navigation
+        KeyCode::Up => app.move_up(),
+        KeyCode::Char('k') => app.move_up(),
+        KeyCode::Down => app.move_down(),
+        KeyCode::Char('j') => app.move_down(),
+
+        // Confirm
+        KeyCode::Enter => app.confirm_selection(),
+
+        // Actions
+        KeyCode::Char('n') => app.enter_new_mode(),
+        KeyCode::Char('s') => app.shell(),
+        KeyCode::Char('q') => app.shell(),
+        KeyCode::Esc => app.shell(),
+
+        // 1-indexed digit selection
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            let digit = c as usize - '0' as usize;
+            app.select_by_number(digit);
+        }
+
+        // Anything else is ignored.
+        _ => {}
+    }
+}
+
+/// Key handler for NewInput mode.
+pub fn handle_input_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Ctrl+C → cancel
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_input(),
+
+        KeyCode::Enter => app.confirm_input(),
+        KeyCode::Esc => app.cancel_input(),
+        KeyCode::Backspace => app.input_backspace(),
+        KeyCode::Char(c) => app.input_char(c),
+
+        // Anything else is ignored.
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::action::Action;
+    use crate::app::Mode;
+    use crate::session::Session;
+
+    fn make_app() -> App {
+        App::new(vec![
+            Session {
+                name: "main".into(),
+                window_count: 1,
+                attached: false,
+                current_command: "bash".into(),
+                last_activity: Duration::from_secs(0),
+            },
+            Session {
+                name: "work".into(),
+                window_count: 2,
+                attached: false,
+                current_command: "vim".into(),
+                last_activity: Duration::from_secs(100),
+            },
+        ])
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    // -----------------------------------------------------------------------
+    // Pick mode — navigation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_arrow_down() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_j_moves_down() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_arrow_up() {
+        let mut app = make_app();
+        app.selected = 1;
+        handle_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_k_moves_up() {
+        let mut app = make_app();
+        app.selected = 1;
+        handle_key(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.selected, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pick mode — selection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enter_selects() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(&app.action, Some(Action::Attach(n)) if n == "main"));
+    }
+
+    #[test]
+    fn test_number_selects() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('2')));
+        assert!(matches!(&app.action, Some(Action::Attach(n)) if n == "work"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pick mode — shell exits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_s_shells() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('s')));
+        assert!(matches!(app.action, Some(Action::Shell)));
+    }
+
+    #[test]
+    fn test_q_shells() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('q')));
+        assert!(matches!(app.action, Some(Action::Shell)));
+    }
+
+    #[test]
+    fn test_esc_shells() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.action, Some(Action::Shell)));
+    }
+
+    #[test]
+    fn test_ctrl_c_shells() {
+        let mut app = make_app();
+        handle_key(&mut app, ctrl('c'));
+        assert!(matches!(app.action, Some(Action::Shell)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pick mode → NewInput transition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_n_enters_new_mode() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.mode, Mode::NewInput);
+    }
+
+    // -----------------------------------------------------------------------
+    // NewInput mode — typing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_input_mode_typing() {
+        let mut app = make_app();
+        app.enter_new_mode();
+        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(app.input, "ab");
+    }
+
+    #[test]
+    fn test_input_mode_backspace() {
+        let mut app = make_app();
+        app.enter_new_mode();
+        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn test_input_mode_esc_cancels() {
+        let mut app = make_app();
+        app.enter_new_mode();
+        handle_key(&mut app, key(KeyCode::Char('x')));
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn test_input_mode_ctrl_c_cancels() {
+        let mut app = make_app();
+        app.enter_new_mode();
+        handle_key(&mut app, ctrl('c'));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unknown key is ignored
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unknown_key_ignored() {
+        let mut app = make_app();
+        let before_selected = app.selected;
+        handle_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.selected, before_selected);
+        assert!(app.action.is_none());
+        assert_eq!(app.mode, Mode::Pick);
+    }
+}
