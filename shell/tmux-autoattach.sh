@@ -36,7 +36,9 @@ case "$action" in
         exec /usr/bin/tmux new-session -s "$sess"
         echo "Failed to create session '$sess'" >&2
         ;;
-    shell) ;;
+    shell)
+        command -v fastfetch &>/dev/null && fastfetch
+        ;;
     *)
         echo "Unknown action from tmux-picker: $action" >&2
         ;;
