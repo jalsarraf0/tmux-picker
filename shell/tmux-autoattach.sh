@@ -22,6 +22,9 @@ if [[ $rc -ne 0 || -z "$action" ]]; then
     return
 fi
 
+# Clear init guard so the new shell inside tmux runs .bashrc fully
+unset __BASH_INIT_ONCE
+
 case "$action" in
     attach:*)
         sess="${action#attach:}"

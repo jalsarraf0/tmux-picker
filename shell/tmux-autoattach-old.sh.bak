@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# tmux session picker — shown on every interactive SSH login.
+# Guards: interactive SSH only, not already inside tmux, tmux installed.
+# Non-interactive sessions (scp, rsync, git-over-ssh) bypass entirely.
+
+if [[ -z "${TMUX}" && -n "${SSH_CONNECTION}" && "$-" == *i* ]] \
+   && [[ -x /usr/bin/tmux ]]; then
+
+    _tmux_picker() {
+        local sessions=() names=() info=()
+        local line name win_count attached
+
+        # Gather live sessions
+        while IFS= read -r line; do
+            name="${line%%:*}"
+            # Extract window count with bash builtins — no subshells
+            if [[ "$line" =~ ([0-9]+)\ windows? ]]; then
+                win_count="${BASH_REMATCH[1]} win"
+            else
+                win_count="? win"
+            fi
+            if [[ "$line" == *"(attached)"* ]]; then
+                attached=" (attached)"
+            else
+                attached=""
+            fi
+            sessions+=("$line")
+            names+=("$name")
+            info+=("${win_count}${attached}")
+        done < <(timeout 5 /usr/bin/tmux list-sessions 2>/dev/null)
+
+        local count=${#names[@]}
+
+        # If no sessions exist at all, just create main
+        if [[ $count -eq 0 ]]; then
+            exec /usr/bin/tmux new-session -s main
+            # Fallback if exec fails
+            echo "Failed to create tmux session." >&2
+            return 1
+        fi
+
+        # Ctrl+C during prompt drops to shell cleanly
+        trap 'echo ""; echo "Interrupted. Dropping to shell."; return 0' INT
+
+        # Print menu
+        echo ""
+        echo "══════ tmux sessions ══════"
+        for i in "${!names[@]}"; do
+            printf "  %d)  %-14s %s\n" "$((i + 1))" "${names[$i]}" "${info[$i]}"
+        done
+        echo "────────────────────────────"
+        echo "  n)  New named session"
+        echo "  s)  Shell only (no tmux)"
+        echo "══════════════════════════=="
+
+        local choice read_rc
+        read -t 15 -rp "Pick [1-${count}/n/s] (default: 1 in 15s): " choice
+        read_rc=$?
+
+        # Timeout or empty input — attach to first session
+        if [[ $read_rc -ne 0 || -z "$choice" ]]; then
+            echo ""
+            exec /usr/bin/tmux attach-session -dt "${names[0]}"
+            echo "Failed to attach to '${names[0]}'." >&2
+            return 1
+        fi
+
+        # Trim leading/trailing whitespace
+        choice="${choice#"${choice%%[![:space:]]*}"}"
+        choice="${choice%"${choice##*[![:space:]]}"}"
+
+        # Handle selection
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if (( choice >= 1 && choice <= count )); then
+                exec /usr/bin/tmux attach-session -dt "${names[$((choice - 1))]}"
+                echo "Failed to attach to '${names[$((choice - 1))]}'." >&2
+                return 1
+            else
+                echo "Out of range (1-${count}). Dropping to shell."
+            fi
+        elif [[ "$choice" == [nN] ]]; then
+            local sess_name="" attempt
+            for attempt in 1 2 3; do
+                read -rp "Session name (required): " sess_name
+                # Sanitize: strip characters tmux rejects (. : and whitespace)
+                sess_name="${sess_name//[.:[:space:]]/-}"
+                # Collapse multiple dashes and trim leading/trailing dashes
+                while [[ "$sess_name" == *--* ]]; do sess_name="${sess_name//--/-}"; done
+                sess_name="${sess_name#-}"
+                sess_name="${sess_name%-}"
+                if [[ -n "$sess_name" ]]; then
+                    break
+                fi
+                if [[ $attempt -lt 3 ]]; then
+                    echo "  Name cannot be empty. Try again."
+                fi
+            done
+            if [[ -z "$sess_name" ]]; then
+                echo "No valid name given. Dropping to shell."
+                return 0
+            fi
+            # Check if session already exists
+            if /usr/bin/tmux has-session -t "$sess_name" 2>/dev/null; then
+                echo "Session '$sess_name' already exists. Attaching."
+                exec /usr/bin/tmux attach-session -dt "$sess_name"
+                echo "Failed to attach to '$sess_name'." >&2
+                return 1
+            fi
+            exec /usr/bin/tmux new-session -s "$sess_name"
+            echo "Failed to create session '$sess_name'." >&2
+            return 1
+        elif [[ "$choice" == [sS] ]]; then
+            echo "Dropping to shell."
+        else
+            echo "Invalid selection. Dropping to shell."
+        fi
+
+    }
+
+    _tmux_picker
+    trap - INT 2>/dev/null
+    unset -f _tmux_picker
+fi
