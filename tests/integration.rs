@@ -13,7 +13,6 @@
 // Each test calls setup() to kill any leftover server and teardown() to
 // clean up afterwards.
 
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
@@ -46,42 +45,14 @@ fn tmux_cmd(args: &[&str]) -> std::process::Output {
         .expect("failed to run tmux")
 }
 
-/// Return the path of the tmux socket file for our isolated socket.
-/// tmux stores sockets at `/tmp/tmux-<uid>/<socket-name>`.
-fn socket_path() -> PathBuf {
-    let uid = libc_getuid();
-    PathBuf::from(format!("/tmp/tmux-{}/{}", uid, SOCKET))
-}
-
-/// Minimal wrapper around libc getuid so we don't need a libc dep.
-fn libc_getuid() -> u32 {
-    // SAFETY: getuid() is always safe to call.
-    #[cfg(unix)]
-    {
-        unsafe extern "C" {
-            fn getuid() -> u32;
-        }
-        // SAFETY: getuid() has no preconditions; it is always safe.
-        unsafe { getuid() }
-    }
-    #[cfg(not(unix))]
-    {
-        1000
-    }
-}
-
 fn setup() {
     let _ = tmux_cmd(&["kill-server"]);
-    thread::sleep(Duration::from_millis(200));
-    // Remove any stale socket file that tmux leaves behind after kill-server.
-    let _ = std::fs::remove_file(socket_path());
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(Duration::from_millis(250));
 }
 
 fn teardown() {
     let _ = tmux_cmd(&["kill-server"]);
     thread::sleep(Duration::from_millis(100));
-    let _ = std::fs::remove_file(socket_path());
 }
 
 fn create_session(name: &str) {

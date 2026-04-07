@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn sort_full_order() {
-        let mut sessions = vec![
+        let mut sessions = [
             make("zebra", false, 50),
             make("alpha", false, 200),
             make("work", true, 300),
@@ -277,7 +277,7 @@ mod tests {
     fn sort_two_attached_by_activity() {
         let a = make("a", true, 10);
         let b = make("b", true, 200);
-        let mut v = vec![b.clone(), a.clone()];
+        let mut v = [b.clone(), a.clone()];
         v.sort();
         assert_eq!(v[0].name, "a");
         assert_eq!(v[1].name, "b");
