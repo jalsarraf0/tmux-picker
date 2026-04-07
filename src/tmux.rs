@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,9 +22,9 @@ fn run_tmux(args: &[&str]) -> Result<String, String> {
 
     // Poll with timeout — tmux commands typically finish in < 100ms
     let start = std::time::Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if start.elapsed() > TMUX_TIMEOUT {
                     let _ = child.kill();
@@ -34,16 +35,22 @@ fn run_tmux(args: &[&str]) -> Result<String, String> {
             }
             Err(e) => return Err(format!("failed to wait on tmux: {e}")),
         }
+    };
+
+    // Drain pipes directly — avoids relying on wait_with_output after try_wait
+    let mut stdout = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("failed to read tmux output: {e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    if status.success() {
+        Ok(stdout)
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        let mut stderr_str = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = err.read_to_string(&mut stderr_str);
+        }
+        Err(stderr_str)
     }
 }
 
@@ -155,11 +162,7 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
 
 /// Returns true if a tmux session with the given name exists.
 pub fn session_exists(name: &str) -> bool {
-    Command::new(TMUX_BIN)
-        .args(["has-session", "-t", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    run_tmux(&["has-session", "-t", name]).is_ok()
 }
 
 // ---------------------------------------------------------------------------

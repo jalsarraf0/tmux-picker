@@ -344,6 +344,20 @@ mod tests {
     }
 
     #[test]
+    fn test_input_clears_error() {
+        let mut app = App::new(make_sessions());
+        app.enter_new_mode();
+        app.input_error = Some("test error".into());
+        // Typing a char should clear the error
+        app.input_char('a');
+        assert!(app.input_error.is_none());
+        // Set error again, backspace should also clear it
+        app.input_error = Some("test error".into());
+        app.input_backspace();
+        assert!(app.input_error.is_none());
+    }
+
+    #[test]
     fn test_confirm_empty_input_cancels() {
         let mut app = App::new(make_sessions());
         app.enter_new_mode();
