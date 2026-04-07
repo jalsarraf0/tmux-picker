@@ -15,6 +15,16 @@ use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
 
+/// RAII guard that restores the terminal on drop — even on panic or early error.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = crossterm::execute!(stderr(), LeaveAlternateScreen);
+    }
+}
+
 fn main() {
     let action = match run() {
         Ok(action) => action,
@@ -27,20 +37,17 @@ fn main() {
 }
 
 fn run() -> Result<Action, Box<dyn std::error::Error>> {
-    // Query tmux
-    if !tmux::server_running() {
-        return Ok(Action::Shell);
-    }
-
-    let sessions = tmux::list_sessions().unwrap_or_default();
-    if sessions.is_empty() {
-        return Ok(Action::New("main".into()));
-    }
+    // Query tmux — single call, no TOCTOU race
+    let sessions = match tmux::list_sessions() {
+        Ok(s) if s.is_empty() => return Ok(Action::New("main".into())),
+        Ok(s) => s,
+        Err(_) => return Ok(Action::Shell),
+    };
 
     // Init terminal on stderr (stdout is for the protocol)
     terminal::enable_raw_mode()?;
-    let mut stderr_handle = stderr();
-    crossterm::execute!(stderr_handle, EnterAlternateScreen)?;
+    let _guard = TerminalGuard; // cleanup on any exit path
+    crossterm::execute!(stderr(), EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stderr());
     let mut terminal = Terminal::new(backend)?;
 
@@ -69,9 +76,6 @@ fn run() -> Result<Action, Box<dyn std::error::Error>> {
         }
     }
 
-    // Cleanup terminal
-    terminal::disable_raw_mode()?;
-    crossterm::execute!(stderr(), LeaveAlternateScreen)?;
-
+    // _guard Drop handles terminal cleanup
     Ok(app.action.unwrap_or(Action::Shell))
 }

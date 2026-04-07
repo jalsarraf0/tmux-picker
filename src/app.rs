@@ -98,10 +98,12 @@ impl App {
 
     pub fn input_char(&mut self, c: char) {
         self.input.push(c);
+        self.input_error = None;
     }
 
     pub fn input_backspace(&mut self) {
         self.input.pop();
+        self.input_error = None;
     }
 
     /// Confirm the current input string.

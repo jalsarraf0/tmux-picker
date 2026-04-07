@@ -5,22 +5,45 @@ use std::time::Duration;
 use crate::session::Session;
 
 const TMUX_BIN: &str = "/usr/bin/tmux";
+const TMUX_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 fn run_tmux(args: &[&str]) -> Result<String, String> {
-    let output = Command::new(TMUX_BIN)
+    let mut child = Command::new(TMUX_BIN)
         .args(args)
-        .output()
-        .map_err(|e| format!("failed to run tmux: {e}"))?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn tmux: {e}"))?;
+
+    // Poll with timeout — tmux commands typically finish in < 100ms
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() > TMUX_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("tmux command timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("failed to wait on tmux: {e}")),
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to read tmux output: {e}"))?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        Err(stderr)
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
     }
 }
 
@@ -96,17 +119,8 @@ pub fn parse_session_line(
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Returns true if the tmux server is running (i.e. `tmux list-sessions`
-/// exits with status 0).
-pub fn server_running() -> bool {
-    Command::new(TMUX_BIN)
-        .args(["list-sessions"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Query the tmux server for all sessions and return them sorted.
+/// Returns Err if the tmux server is not running or unreachable.
 pub fn list_sessions() -> Result<Vec<Session>, String> {
     // Collect pane commands first (best-effort; ignore errors).
     let pane_output = run_tmux(&[
