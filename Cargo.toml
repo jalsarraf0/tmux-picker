@@ -1,0 +1,9 @@
+[package]
+name = "tmux-picker"
+version = "0.1.0"
+edition = "2024"
+description = "TUI session picker for tmux on SSH login"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
