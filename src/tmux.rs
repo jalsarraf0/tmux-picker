@@ -1,19 +1,40 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::session::Session;
 
-const TMUX_BIN: &str = "/usr/bin/tmux";
 const TMUX_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolve the tmux binary once: prefer /usr/bin/tmux, fall back to PATH lookup.
+fn tmux_bin() -> &'static str {
+    static BIN: OnceLock<String> = OnceLock::new();
+    BIN.get_or_init(|| {
+        if std::path::Path::new("/usr/bin/tmux").exists() {
+            return "/usr/bin/tmux".to_string();
+        }
+        // Fall back to PATH lookup via `which`
+        if let Ok(output) = Command::new("which").arg("tmux").output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+        // Last resort — hope it's in PATH
+        "tmux".to_string()
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 fn run_tmux(args: &[&str]) -> Result<String, String> {
-    let mut child = Command::new(TMUX_BIN)
+    let mut child = Command::new(tmux_bin())
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

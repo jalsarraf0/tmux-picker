@@ -41,7 +41,8 @@ fn run() -> Result<Action, Box<dyn std::error::Error>> {
     let sessions = match tmux::list_sessions() {
         Ok(s) if s.is_empty() => return Ok(Action::New("main".into())),
         Ok(s) => s,
-        Err(_) => return Ok(Action::Shell),
+        // tmux server not running (e.g. early boot race) — create a session
+        Err(_) => return Ok(Action::New("main".into())),
     };
 
     // Init terminal on stderr (stdout is for the protocol)

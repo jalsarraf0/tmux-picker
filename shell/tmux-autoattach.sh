@@ -1,24 +1,65 @@
 #!/usr/bin/env bash
 # tmux session picker — interactive SSH logins only.
-# Calls tmux-picker binary for TUI, falls back to shell on any failure.
+# Calls tmux-picker binary for TUI, cascades through fallbacks so the user
+# ALWAYS ends up inside tmux unless they explicitly choose a bare shell.
+#
+# Fallback chain (per action):
+#   attach → new-session with that name → new "main" → bare shell (last resort)
+#   new    → new-session with that name → new "main" → bare shell (last resort)
 
 [[ -z "$SSH_CONNECTION" ]] && return
 [[ -n "$TMUX" ]] && return
 [[ "$-" != *i* ]] && return
 [[ -n "${NO_TMUX:-}" ]] && return
+# tmux-picker needs a real terminal; bail if /dev/tty is not available
+[[ ! -t 0 ]] && return
 
+_TMUX="/usr/bin/tmux"
 _PICKER="${HOME}/.local/bin/tmux-picker"
 
+# Verify tmux is available — cannot proceed without it
+if [[ ! -x "$_TMUX" ]]; then
+    echo "tmux not found at $_TMUX — cannot attach" >&2
+    return
+fi
+
+# ---------------------------------------------------------------------------
+# _tmux_fallback: cascading last-resort — new-session with the given name,
+# then new "main", then bare shell.
+# ---------------------------------------------------------------------------
+_tmux_fallback() {
+    local sess="${1:-main}"
+    if "$_TMUX" new-session -As "$sess" 2>/dev/null; then
+        return 0
+    fi
+    if [[ "$sess" != "main" ]]; then
+        echo "tmux new-session '$sess' failed — trying 'main'" >&2
+        if "$_TMUX" new-session -As "main" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    echo "all tmux attempts failed — bare shell" >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Run the picker TUI
+# ---------------------------------------------------------------------------
 if [[ -x "$_PICKER" ]]; then
     action="$("$_PICKER" 2>/dev/tty)"
     rc=$?
 else
-    echo "tmux-picker not found at $_PICKER — dropping to shell" >&2
+    # Picker binary missing — skip TUI, go straight to fallback
+    echo "tmux-picker not found at $_PICKER — attaching directly" >&2
+    _tmux_fallback "main"
+    unset -f _tmux_fallback
     return
 fi
 
 if [[ $rc -ne 0 || -z "$action" ]]; then
-    echo "tmux-picker exited $rc — dropping to shell" >&2
+    echo "tmux-picker exited $rc — attaching directly" >&2
+    _tmux_fallback "main"
+    unset -f _tmux_fallback
     return
 fi
 
@@ -28,18 +69,20 @@ unset __BASH_INIT_ONCE
 case "$action" in
     attach:*)
         sess="${action#attach:}"
-        exec /usr/bin/tmux attach-session -dt "$sess"
-        echo "Failed to attach to '$sess'" >&2
+        # Try attach; if session vanished, cascade through fallbacks
+        "$_TMUX" attach-session -dt "$sess" 2>/dev/null || _tmux_fallback "$sess"
         ;;
     new:*)
         sess="${action#new:}"
-        exec /usr/bin/tmux new-session -s "$sess"
-        echo "Failed to create session '$sess'" >&2
+        "$_TMUX" new-session -As "$sess" 2>/dev/null || _tmux_fallback "$sess"
         ;;
     shell)
         command -v fastfetch &>/dev/null && fastfetch
         ;;
     *)
-        echo "Unknown action from tmux-picker: $action" >&2
+        echo "Unknown action from tmux-picker: $action — attaching directly" >&2
+        _tmux_fallback "main"
         ;;
 esac
+
+unset -f _tmux_fallback
