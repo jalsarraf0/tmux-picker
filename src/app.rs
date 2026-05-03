@@ -28,6 +28,10 @@ pub struct App {
     pub action: Option<Action>,
     pub timeout_remaining: Duration,
     pub input_error: Option<String>,
+    /// Cached preview text for the currently-selected session.
+    pub preview: Option<String>,
+    /// Session name the preview was last fetched for. None forces a refresh.
+    pub preview_for: Option<String>,
 }
 
 impl App {
@@ -40,7 +44,31 @@ impl App {
             action: None,
             timeout_remaining: Duration::from_secs(TIMEOUT_SECS),
             input_error: None,
+            preview: None,
+            preview_for: None,
         }
+    }
+
+    /// Returns the currently-selected session name, if any.
+    pub fn selected_name(&self) -> Option<&str> {
+        self.sessions.get(self.selected).map(|s| s.name.as_str())
+    }
+
+    /// True if the cached preview is for the currently-selected session.
+    pub fn preview_is_current(&self) -> bool {
+        match (self.selected_name(), self.preview_for.as_deref()) {
+            (Some(sel), Some(cached)) => sel == cached,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// Update the preview cache. Call from the picker loop after a successful
+    /// `tmux::pane_capture`. Pass None for the text on capture failure to
+    /// render an "(unavailable)" placeholder.
+    pub fn set_preview(&mut self, text: Option<String>) {
+        self.preview = text;
+        self.preview_for = self.selected_name().map(String::from);
     }
 
     // -----------------------------------------------------------------------
@@ -51,6 +79,7 @@ impl App {
         if self.selected > 0 {
             self.selected -= 1;
         }
+        self.invalidate_preview_if_changed();
         self.reset_timeout();
     }
 
@@ -58,7 +87,14 @@ impl App {
         if !self.sessions.is_empty() && self.selected < self.sessions.len() - 1 {
             self.selected += 1;
         }
+        self.invalidate_preview_if_changed();
         self.reset_timeout();
+    }
+
+    fn invalidate_preview_if_changed(&mut self) {
+        if !self.preview_is_current() {
+            self.preview = None;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -428,5 +464,37 @@ mod tests {
         let mut app = App::new(vec![]);
         app.tick(Duration::from_secs(10));
         assert!(matches!(app.action, Some(Action::Shell)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Preview cache
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn preview_is_current_after_set() {
+        let mut app = App::new(make_sessions());
+        app.set_preview(Some("hello".into()));
+        assert!(app.preview_is_current());
+        assert_eq!(app.preview.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn preview_invalidated_on_navigation() {
+        let mut app = App::new(make_sessions());
+        app.set_preview(Some("first".into()));
+        app.move_down();
+        // After navigation, preview is invalidated (set to None) so the loop
+        // refetches it.
+        assert!(app.preview.is_none());
+        assert!(!app.preview_is_current());
+    }
+
+    #[test]
+    fn preview_persists_when_navigation_no_op() {
+        // make_sessions returns 3; selected starts at 0. move_up at 0 is no-op.
+        let mut app = App::new(make_sessions());
+        app.set_preview(Some("kept".into()));
+        app.move_up();
+        assert_eq!(app.preview.as_deref(), Some("kept"));
     }
 }

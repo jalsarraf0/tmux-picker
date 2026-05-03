@@ -50,9 +50,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .map(|_| 1)
         .unwrap_or(0);
 
+    let preview_height: u16 = if app.selected_name().is_some() {
+        // 5 content rows + 2 border rows; only render if there's room.
+        if area.height >= 14 { 7 } else { 0 }
+    } else {
+        0
+    };
+
     let chunks = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(detail_height),
+        Constraint::Length(preview_height),
         Constraint::Length(3),
         Constraint::Length(3),
     ])
@@ -62,8 +70,27 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if detail_height > 0 {
         draw_detail(frame, app, chunks[1]);
     }
-    draw_actions(frame, app, chunks[2]);
-    draw_help(frame, app, chunks[3]);
+    if preview_height > 0 {
+        draw_preview(frame, app, chunks[2]);
+    }
+    draw_actions(frame, app, chunks[3]);
+    draw_help(frame, app, chunks[4]);
+}
+
+fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" preview ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let body = match app.preview.as_deref() {
+        Some(text) if !text.is_empty() => text.to_string(),
+        Some(_) => String::from("(empty)"),
+        None => String::from("(unavailable)"),
+    };
+    let para = Paragraph::new(body)
+        .style(Style::default().fg(Color::DarkGray))
+        .block(block);
+    frame.render_widget(para, area);
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {

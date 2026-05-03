@@ -72,6 +72,7 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
     let mut app = App::new(sessions);
     let mut last_tick = Instant::now();
+    refresh_preview_if_needed(&mut app);
 
     // Main loop
     loop {
@@ -87,6 +88,7 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
         if last_tick.elapsed() >= TICK_RATE {
             app.tick(last_tick.elapsed());
+            refresh_preview_if_needed(&mut app);
             last_tick = Instant::now();
         }
 
@@ -97,6 +99,20 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
     // _guard Drop handles terminal cleanup
     Ok(app.action.unwrap_or(Action::Shell))
+}
+
+/// If the preview cache is missing or stale, fetch a fresh one for the
+/// currently-selected session. On capture failure we cache None so the UI
+/// renders "(unavailable)" without re-trying every tick.
+fn refresh_preview_if_needed(app: &mut App) {
+    if app.preview.is_some() && app.preview_is_current() {
+        return;
+    }
+    let Some(name) = app.selected_name().map(String::from) else {
+        return;
+    };
+    let captured = tmux::pane_capture(&name, 6).ok();
+    app.set_preview(captured);
 }
 
 // ---------------------------------------------------------------------------

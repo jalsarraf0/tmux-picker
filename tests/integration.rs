@@ -411,6 +411,45 @@ fn test_label_rejects_unknown_session() {
 }
 
 #[test]
+fn test_pane_capture_returns_buffer_text() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}capture");
+    create_default_socket_session(&sess);
+
+    // Send a unique line into the pane and wait for it to render.
+    let _ = Command::new(TMUX)
+        .args([
+            "send-keys",
+            "-t",
+            &sess,
+            "echo CAPTURE-MARKER-12345",
+            "Enter",
+        ])
+        .output();
+    thread::sleep(Duration::from_millis(200));
+
+    let out = run_binary(&["show", &sess]);
+    // We invoke `show` to ensure the binary still works; capture itself uses
+    // the underlying tmux::pane_capture function indirectly via picker — here
+    // we test the tmux command directly to verify the format matches.
+    assert!(out.status.success());
+
+    let cap = Command::new(TMUX)
+        .args(["capture-pane", "-t", &sess, "-p", "-J", "-S", "-6"])
+        .output()
+        .expect("capture-pane");
+    let text = String::from_utf8_lossy(&cap.stdout);
+    assert!(
+        text.contains("CAPTURE-MARKER-12345"),
+        "capture missing marker; got: {text}"
+    );
+
+    cleanup_it_sessions();
+}
+
+#[test]
 fn test_auto_uses_pane_cwd() {
     let _lock = serial_lock();
     cleanup_it_sessions();

@@ -250,6 +250,15 @@ pub fn pane_current_path(session: &str) -> Result<String, String> {
     Ok(out.trim_end_matches('\n').to_string())
 }
 
+/// Capture the last `lines` lines of the session's active pane buffer.
+/// Returns up to `lines` lines (may be fewer if the pane buffer is shorter).
+pub fn pane_capture(session: &str, lines: u16) -> Result<String, String> {
+    let start = format!("-{lines}");
+    let out = run_tmux(&["capture-pane", "-t", session, "-p", "-J", "-S", &start])?;
+    // Strip trailing whitespace/newlines for cleaner rendering.
+    Ok(out.trim_end().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
