@@ -47,12 +47,16 @@ else
 fi
 
 # --- Test 3: Binary runs without crash ---
+# The binary uses the default tmux socket, so when the host has live
+# sessions the picker enters its TUI loop and `timeout` has to kill it
+# (exit 124 == SIGTERM by timeout, NOT a crash). Treat 0/1/124 all as
+# "did not crash". Anything else (segfault, panic, abort) still fails.
 echo "Test 3: Binary does not crash"
 cleanup
 $TMUX_BIN -L "$SOCKET" new-session -d -s e2e-test
 sleep 0.1
 timeout 2 "$BINARY" 2>/dev/null </dev/null && rc=$? || rc=$?
-if [[ $rc -le 1 ]]; then
+if [[ $rc -le 1 || $rc -eq 124 ]]; then
     pass "binary runs without crash (exit $rc)"
 else
     fail "binary runs without crash" "exit code: $rc"
