@@ -29,6 +29,9 @@ impl Drop for TerminalGuard {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.init {
+        return run_init(cli.force);
+    }
     if cli.check_config {
         return run_check_config();
     }
@@ -61,6 +64,41 @@ fn run_check_config() -> ExitCode {
     println!();
     println!("# effective config");
     print!("{}", cfg.to_toml());
+    ExitCode::SUCCESS
+}
+
+fn run_init(force: bool) -> ExitCode {
+    let Some(path) = tmux_picker::config::config_file_path() else {
+        eprintln!(
+            "tmux-picker --init: $HOME / $XDG_CONFIG_HOME unset; \
+             cannot resolve a config path"
+        );
+        return ExitCode::FAILURE;
+    };
+    if path.exists() && !force {
+        eprintln!(
+            "tmux-picker --init: refusing to overwrite {} (pass --force to overwrite)",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "tmux-picker --init: could not create {}: {e}",
+            parent.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = std::fs::write(&path, tmux_picker::config::STARTER_TOML) {
+        eprintln!(
+            "tmux-picker --init: write failed for {}: {e}",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    println!("wrote starter config to {}", path.display());
     ExitCode::SUCCESS
 }
 

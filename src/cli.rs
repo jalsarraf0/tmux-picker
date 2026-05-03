@@ -15,6 +15,15 @@ pub struct Cli {
     #[arg(long, global = false)]
     pub check_config: bool,
 
+    /// Write a starter `~/.config/tmux-picker/config.toml`. Refuses to
+    /// overwrite an existing file unless `--force` is also passed.
+    #[arg(long)]
+    pub init: bool,
+
+    /// Overwrite an existing config file when used with `--init`.
+    #[arg(long, requires = "init")]
+    pub force: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

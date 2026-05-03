@@ -1,0 +1,31 @@
+# Maintainer: jalsarraf <19882582+jalsarraf0@users.noreply.github.com>
+pkgname=tmux-picker-bin
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="TUI session picker for tmux on SSH login"
+arch=('x86_64')
+url="https://github.com/jalsarraf/tmux-picker"
+license=('MIT')
+depends=('tmux')
+optdepends=(
+    'wl-clipboard: clipboard yank on Wayland'
+    'xclip: clipboard yank on X11'
+    'xsel: clipboard yank fallback on X11'
+)
+provides=('tmux-picker')
+conflicts=('tmux-picker')
+source=(
+    "$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/tmux-picker-$pkgver-x86_64-unknown-linux-gnu.tar.gz"
+)
+sha256sums=('SKIP')
+
+package() {
+    install -Dm755 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/tmux-picker" \
+        "$pkgdir/usr/bin/tmux-picker"
+    install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/tmux-autoattach.sh" \
+        "$pkgdir/etc/profile.d/tmux-autoattach.sh"
+    install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/README.md" \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

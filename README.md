@@ -29,7 +29,26 @@ stdout and execs tmux (or drops to a shell if the user picked `s`).
 - Optional user config at `~/.config/tmux-picker/config.toml` for the auto-attach
   timeout, theme colors, and process markers.
 
-## Build / Install
+## Install
+
+### From crates.io
+
+```bash
+cargo install tmux-picker
+```
+
+### Pre-built binary (cargo-binstall)
+
+```bash
+cargo binstall tmux-picker
+```
+
+### Arch Linux (AUR)
+
+A `PKGBUILD` ships under `packaging/PKGBUILD` for the `tmux-picker-bin`
+package; clone it and build with `makepkg -si`.
+
+### Build from source
 
 ```bash
 cargo build --release
@@ -37,6 +56,15 @@ cp target/release/tmux-picker ~/.local/bin/
 ```
 
 Or use `scripts/install.sh` for a complete setup that includes the shell hook.
+
+### First-run config
+
+```bash
+tmux-picker --init    # writes ~/.config/tmux-picker/config.toml
+```
+
+The starter file documents every available knob; pass `--force` to
+overwrite a hand-edited config.
 
 ## CLI
 
@@ -173,3 +201,21 @@ cargo clippy -- -D warnings
 cargo test
 bash tests/e2e.sh
 ```
+
+## Releasing (maintainer notes)
+
+1. Bump `version` in `Cargo.toml`.
+2. Update `packaging/PKGBUILD`'s `pkgver` to match.
+3. `cargo publish --dry-run` and resolve any warnings.
+4. Tag and push: `git tag v$VERSION && git push --tags`.
+5. Build per-target tarballs and attach them to the GitHub release so
+   `cargo binstall` and the AUR `PKGBUILD` can find them. Each tarball
+   should contain `tmux-picker`, `shell/tmux-autoattach.sh`, `LICENSE`,
+   and `README.md` under a directory named
+   `tmux-picker-$VERSION-$TARGET/`.
+6. `cargo publish` to crates.io.
+7. Submit / refresh the AUR package.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

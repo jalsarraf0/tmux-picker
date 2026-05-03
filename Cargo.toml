@@ -1,8 +1,15 @@
 [package]
 name = "tmux-picker"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "TUI session picker for tmux on SSH login"
+authors = ["jalsarraf <19882582+jalsarraf0@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/jalsarraf/tmux-picker"
+homepage = "https://github.com/jalsarraf/tmux-picker"
+readme = "README.md"
+keywords = ["tmux", "tui", "ratatui", "session", "picker"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.30"
@@ -19,3 +26,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "tmux-picker"
 path = "src/main.rs"
+
+# `cargo binstall tmux-picker` resolves the right release tarball from
+# the GitHub release.
+[package.metadata.binstall]
+pkg-url = "{repo}/releases/download/v{version}/{name}-{version}-{target}.tar.gz"
+bin-dir = "{name}-{version}-{target}/{bin}"
+pkg-fmt = "tgz"

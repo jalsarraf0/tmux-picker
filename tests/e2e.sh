@@ -171,6 +171,42 @@ else
     fail "--check-config hex" "exit=$rc; got: $out"
 fi
 
+# --- Test 13a: --init writes a starter config ---
+echo "Test 13a: --init writes a starter config"
+INIT_HOME="$(mktemp -d)"
+out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
+    "$BINARY" --init 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && [[ -f "$INIT_HOME/.config/tmux-picker/config.toml" ]] \
+    && grep -q 'timeout_secs' "$INIT_HOME/.config/tmux-picker/config.toml"; then
+    pass "--init writes starter config"
+else
+    fail "--init writes starter config" "exit=$rc; got: $out"
+fi
+
+# --- Test 13b: --init refuses to overwrite without --force ---
+echo "Test 13b: --init refuses overwrite without --force"
+out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
+    "$BINARY" --init 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q 'refusing to overwrite' <<<"$out"; then
+    pass "--init refuses overwrite"
+else
+    fail "--init no overwrite" "exit=$rc; got: $out"
+fi
+
+# --- Test 13c: --init --force overwrites ---
+echo "Test 13c: --init --force overwrites"
+echo "stale" > "$INIT_HOME/.config/tmux-picker/config.toml"
+out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
+    "$BINARY" --init --force 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q 'timeout_secs' "$INIT_HOME/.config/tmux-picker/config.toml"; then
+    pass "--init --force overwrites"
+else
+    fail "--init --force" "exit=$rc; got: $out"
+fi
+rm -rf "$INIT_HOME"
+
 # --- Test 13: auto-label falls back to ~/git/<sessname> ---
 echo "Test 13: auto picks ~/git/<sess> when pane cwd has no repo"
 SESS="e2e-stub-$$"

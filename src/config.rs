@@ -7,6 +7,43 @@ use ratatui::style::Color;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
+/// Starter `~/.config/tmux-picker/config.toml` content used by
+/// `tmux-picker --init`. Round-trips through `from_str` to the same
+/// effective config as `Config::default()`.
+pub const STARTER_TOML: &str = r##"# tmux-picker — starter config
+# Every key is optional. Delete or comment any line to fall back to the
+# default. Run `tmux-picker --check-config` to confirm what's effective.
+
+# Auto-attach countdown for the most-recent detached session, in seconds.
+# 0 disables auto-attach (the picker waits for a manual choice).
+timeout_secs = 10
+
+# Theme overrides. Values: black|red|green|yellow|blue|magenta|cyan|white,
+# darkgray (alias gray/grey), light{red,green,yellow,blue,magenta,cyan},
+# 256-colour indexes ("196" or 196), or hex like "#ff8800" / "#abc".
+[theme]
+accent = "cyan"            # numbers, attached marker, prompt accents
+warning = "red"            # kill-confirm prompt, error highlights
+selection_bg = "darkgray"  # highlighted row background
+
+# Process markers. The first matching pattern wins; user patterns are
+# checked before the built-in defaults. Set disable_defaults to drop
+# the built-ins entirely.
+[markers]
+disable_defaults = false
+
+# [markers.patterns]
+# foo = "★"          # any pane running `foo` gets a ★
+# "my-tool" = "🚀"
+"##;
+
+/// Path tmux-picker reads / writes for its config. Public so `--init` can
+/// re-use the same resolver as the loader. Honours `$XDG_CONFIG_HOME`,
+/// otherwise falls back to `$HOME/.config/tmux-picker/config.toml`.
+pub fn config_file_path() -> Option<std::path::PathBuf> {
+    config_path()
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub timeout_secs: u64,
@@ -621,5 +658,25 @@ mod tests {
             "#,
         );
         assert!(warnings.iter().any(|w| w.contains("markers.patterns.bad")));
+    }
+
+    #[test]
+    fn starter_toml_parses_clean() {
+        let (_, warnings) = Config::from_str_with_warnings(STARTER_TOML);
+        assert!(
+            warnings.is_empty(),
+            "starter config should parse with no warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn starter_toml_round_trips_to_default() {
+        let cfg = Config::from_str(STARTER_TOML);
+        let default = Config::default();
+        assert_eq!(cfg.timeout_secs, default.timeout_secs);
+        assert!(matches!(cfg.theme.accent, Color::Cyan));
+        assert!(matches!(cfg.theme.warning, Color::Red));
+        assert!(matches!(cfg.theme.selection_bg, Color::DarkGray));
+        assert!(!cfg.markers.disable_defaults);
     }
 }
