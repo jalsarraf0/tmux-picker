@@ -212,6 +212,11 @@ pub fn session_exists(name: &str) -> bool {
     run_tmux(&["has-session", "-t", name]).is_ok()
 }
 
+/// Kill a tmux session by name.
+pub fn kill_session(name: &str) -> Result<(), String> {
+    run_tmux(&["kill-session", "-t", name]).map(|_| ())
+}
+
 /// Set a tmux user-option on a session.
 /// `key` must NOT include the `@` prefix; it is added here.
 pub fn set_user_option(session: &str, key: &str, value: &str) -> Result<(), String> {

@@ -84,6 +84,22 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
             && key.kind == KeyEventKind::Press
         {
             input::handle_key(&mut app, key);
+            // After every input, see if the user confirmed a kill.
+            if let Some(target) = app.take_pending_kill() {
+                let _ = tmux::kill_session(&target);
+            }
+        }
+
+        // If the session list went dirty (e.g., post-kill), re-fetch.
+        if app.sessions_dirty
+            && let Ok(fresh) = tmux::list_sessions()
+        {
+            if fresh.is_empty() {
+                // No sessions left — drop out and let the shell stub create one.
+                app.action = Some(Action::New("main".into()));
+                break;
+            }
+            app.replace_sessions(fresh);
         }
 
         if last_tick.elapsed() >= TICK_RATE {

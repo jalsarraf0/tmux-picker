@@ -7,6 +7,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match app.mode {
         Mode::Pick => handle_pick_key(app, key),
         Mode::NewInput => handle_input_key(app, key),
+        Mode::Filter => handle_filter_key(app, key),
+        Mode::ConfirmKill => handle_confirm_kill_key(app, key),
     }
 }
 
@@ -31,6 +33,10 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('q') => app.shell(),
         KeyCode::Esc => app.shell(),
 
+        // Power ops
+        KeyCode::Char('/') => app.enter_filter_mode(),
+        KeyCode::Char('K') => app.enter_kill_confirm(),
+
         // 1-indexed digit selection
         KeyCode::Char(c) if c.is_ascii_digit() => {
             let digit = c as usize - '0' as usize;
@@ -39,6 +45,33 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
 
         // Anything else is ignored.
         _ => {}
+    }
+}
+
+/// Key handler for Filter mode.
+pub fn handle_filter_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_filter(),
+        KeyCode::Esc => app.cancel_filter(),
+        // Enter exits filter mode keeping the current filter and selection,
+        // then attaches to that selected session.
+        KeyCode::Enter => {
+            app.confirm_filter();
+            app.confirm_selection();
+        }
+        KeyCode::Up => app.move_up(),
+        KeyCode::Down => app.move_down(),
+        KeyCode::Backspace => app.filter_backspace(),
+        KeyCode::Char(c) => app.filter_char(c),
+        _ => {}
+    }
+}
+
+/// Key handler for ConfirmKill mode. `y`/`Y` confirms; anything else cancels.
+pub fn handle_confirm_kill_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_kill(),
+        _ => app.cancel_kill(),
     }
 }
 
@@ -248,5 +281,81 @@ mod tests {
         assert_eq!(app.selected, before_selected);
         assert!(app.action.is_none());
         assert_eq!(app.mode, Mode::Pick);
+    }
+
+    // -----------------------------------------------------------------------
+    // Filter + Kill mode key dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn slash_enters_filter_mode() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Filter);
+    }
+
+    #[test]
+    fn capital_k_enters_kill_confirm() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('K')));
+        assert_eq!(app.mode, Mode::ConfirmKill);
+        assert!(app.kill_target.is_some());
+    }
+
+    #[test]
+    fn lowercase_k_still_navigates_up() {
+        let mut app = make_app();
+        app.selected = 1;
+        handle_key(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn filter_mode_typing_appends_to_filter() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('/')));
+        handle_key(&mut app, key(KeyCode::Char('w')));
+        handle_key(&mut app, key(KeyCode::Char('o')));
+        assert_eq!(app.filter, "wo");
+    }
+
+    #[test]
+    fn filter_mode_esc_cancels_back_to_pick() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('/')));
+        handle_key(&mut app, key(KeyCode::Char('w')));
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Pick);
+        assert_eq!(app.filter, "");
+    }
+
+    #[test]
+    fn filter_mode_enter_confirms_and_attaches() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('/')));
+        // Filter is empty so all visible; enter attaches to selected.
+        handle_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.action.is_some());
+    }
+
+    #[test]
+    fn confirm_kill_y_pushes_pending() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('K')));
+        handle_key(&mut app, key(KeyCode::Char('y')));
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.pending_kill.is_some());
+    }
+
+    #[test]
+    fn confirm_kill_n_cancels() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('K')));
+        handle_key(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.pending_kill.is_none());
+        assert!(app.kill_target.is_none());
     }
 }

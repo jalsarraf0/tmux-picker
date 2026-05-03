@@ -218,12 +218,24 @@ fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw("  new session     "),
             Span::styled(
+                "/",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  filter     "),
+            Span::styled(
+                "K",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  kill     "),
+            Span::styled(
                 "s",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  shell (no tmux)"),
+            Span::raw("  shell"),
         ]),
         Mode::NewInput => {
             if let Some(ref err) = app.input_error {
@@ -250,6 +262,42 @@ fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                 ])
             }
+        }
+        Mode::Filter => {
+            let count = app.filtered_indices.len();
+            Line::from(vec![
+                Span::raw("  filter: /"),
+                Span::styled(
+                    format!("{}\u{2588}", app.filter),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+                Span::styled(
+                    format!("   ({count} match)"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+        }
+        Mode::ConfirmKill => {
+            let target = app.kill_target.as_deref().unwrap_or("?");
+            Line::from(vec![
+                Span::styled(
+                    "  kill ",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    target.to_string(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  ?  "),
+                Span::styled("[y]", Style::default().fg(Color::Green)),
+                Span::raw(" yes  "),
+                Span::styled("[any]", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel"),
+            ])
         }
     };
 
@@ -278,6 +326,14 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         }
         Mode::NewInput => Line::from(vec![Span::styled(
             "  enter confirm  \u{00b7}  esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Mode::Filter => Line::from(vec![Span::styled(
+            "  type to filter  \u{00b7}  \u{2191}\u{2193} navigate  \u{00b7}  enter attach  \u{00b7}  esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Mode::ConfirmKill => Line::from(vec![Span::styled(
+            "  y to kill  \u{00b7}  any other key cancels",
             Style::default().fg(Color::DarkGray),
         )]),
     };

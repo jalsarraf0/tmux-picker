@@ -14,6 +14,8 @@ const TIMEOUT_SECS: u64 = 10;
 pub enum Mode {
     Pick,
     NewInput,
+    Filter,
+    ConfirmKill,
 }
 
 // ---------------------------------------------------------------------------
@@ -22,6 +24,7 @@ pub enum Mode {
 
 pub struct App {
     pub sessions: Vec<Session>,
+    /// Index into `filtered_indices` (which itself indexes into `sessions`).
     pub selected: usize,
     pub mode: Mode,
     pub input: String,
@@ -32,10 +35,22 @@ pub struct App {
     pub preview: Option<String>,
     /// Session name the preview was last fetched for. None forces a refresh.
     pub preview_for: Option<String>,
+    /// Filter substring (case-insensitive). Empty = match all.
+    pub filter: String,
+    /// Indices into `sessions` that match the current filter.
+    pub filtered_indices: Vec<usize>,
+    /// When true, the picker loop should re-fetch sessions before next render.
+    pub sessions_dirty: bool,
+    /// Selected session name to kill, set when Mode == ConfirmKill.
+    pub kill_target: Option<String>,
+    /// Set by `confirm_kill` for the picker loop to consume via
+    /// `take_pending_kill`. Decouples input handling from tmux I/O.
+    pub pending_kill: Option<String>,
 }
 
 impl App {
     pub fn new(sessions: Vec<Session>) -> Self {
+        let filtered_indices = (0..sessions.len()).collect();
         App {
             sessions,
             selected: 0,
@@ -46,12 +61,69 @@ impl App {
             input_error: None,
             preview: None,
             preview_for: None,
+            filter: String::new(),
+            filtered_indices,
+            sessions_dirty: false,
+            kill_target: None,
+            pending_kill: None,
         }
+    }
+
+    /// Returns the index into `sessions` for the currently-selected row in
+    /// the visible (filtered) list, or None if the filtered list is empty.
+    pub fn selected_session_index(&self) -> Option<usize> {
+        self.filtered_indices.get(self.selected).copied()
+    }
+
+    /// Returns the currently-selected session, if any.
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.selected_session_index()
+            .and_then(|i| self.sessions.get(i))
     }
 
     /// Returns the currently-selected session name, if any.
     pub fn selected_name(&self) -> Option<&str> {
-        self.sessions.get(self.selected).map(|s| s.name.as_str())
+        self.selected_session().map(|s| s.name.as_str())
+    }
+
+    /// Replace the session list (e.g., after kill). Resets filter index
+    /// and tries to keep selection on the same session name if still present.
+    pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
+        let prev_name = self.selected_name().map(String::from);
+        self.sessions = sessions;
+        self.recompute_filter();
+        if let Some(name) = prev_name {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&i| self.sessions.get(i).is_some_and(|s| s.name == name))
+            {
+                self.selected = pos;
+            } else {
+                self.selected = 0;
+            }
+        } else {
+            self.selected = 0;
+        }
+        self.sessions_dirty = false;
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    /// Recompute `filtered_indices` based on `filter`. Empty filter = all.
+    pub fn recompute_filter(&mut self) {
+        let f = self.filter.to_lowercase();
+        if f.is_empty() {
+            self.filtered_indices = (0..self.sessions.len()).collect();
+            return;
+        }
+        self.filtered_indices = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| session_matches(s, &f))
+            .map(|(i, _)| i)
+            .collect();
     }
 
     /// True if the cached preview is for the currently-selected session.
@@ -84,7 +156,7 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
-        if !self.sessions.is_empty() && self.selected < self.sessions.len() - 1 {
+        if !self.filtered_indices.is_empty() && self.selected < self.filtered_indices.len() - 1 {
             self.selected += 1;
         }
         self.invalidate_preview_if_changed();
@@ -101,9 +173,10 @@ impl App {
     // Selection
     // -----------------------------------------------------------------------
 
-    /// 1-indexed. If n is in range, set selected and confirm. Otherwise no-op.
+    /// 1-indexed. If n is in range of the visible (filtered) list, set
+    /// selected and confirm. Otherwise no-op.
     pub fn select_by_number(&mut self, n: usize) {
-        if n == 0 || n > self.sessions.len() {
+        if n == 0 || n > self.filtered_indices.len() {
             return;
         }
         self.selected = n - 1;
@@ -111,7 +184,7 @@ impl App {
     }
 
     pub fn confirm_selection(&mut self) {
-        if let Some(session) = self.sessions.get(self.selected) {
+        if let Some(session) = self.selected_session() {
             self.action = Some(Action::Attach(session.name.clone()));
         }
     }
@@ -205,7 +278,9 @@ impl App {
     // -----------------------------------------------------------------------
 
     /// Choose the first detached session, or the first session, or Shell if
-    /// the session list is empty.
+    /// the session list is empty. Operates against the full session list
+    /// (auto-select bypasses any filter — auto-attach is for the no-input
+    /// case where the user wouldn't have started typing a filter anyway).
     fn auto_select(&mut self) {
         if self.sessions.is_empty() {
             self.action = Some(Action::Shell);
@@ -213,18 +288,117 @@ impl App {
         }
 
         // Prefer the first detached session.
-        if let Some(idx) = self.sessions.iter().position(|s| !s.attached) {
-            self.selected = idx;
-        } else {
-            self.selected = 0;
-        }
+        let pos = self.sessions.iter().position(|s| !s.attached).unwrap_or(0);
 
-        self.confirm_selection();
+        if let Some(name) = self.sessions.get(pos).map(|s| s.name.clone()) {
+            self.action = Some(Action::Attach(name));
+        }
     }
 
     fn reset_timeout(&mut self) {
         self.timeout_remaining = Duration::from_secs(TIMEOUT_SECS);
     }
+
+    // -----------------------------------------------------------------------
+    // Filter mode
+    // -----------------------------------------------------------------------
+
+    pub fn enter_filter_mode(&mut self) {
+        self.mode = Mode::Filter;
+        self.filter.clear();
+        self.recompute_filter();
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    pub fn cancel_filter(&mut self) {
+        self.mode = Mode::Pick;
+        self.filter.clear();
+        self.recompute_filter();
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    pub fn confirm_filter(&mut self) {
+        // Keep the filter in effect but exit Filter mode so navigation works.
+        self.mode = Mode::Pick;
+        self.reset_timeout();
+    }
+
+    pub fn filter_char(&mut self, c: char) {
+        self.filter.push(c);
+        self.recompute_filter();
+        // Reset selection to the first match when the filter changes.
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    pub fn filter_backspace(&mut self) {
+        self.filter.pop();
+        self.recompute_filter();
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Kill (with confirm)
+    // -----------------------------------------------------------------------
+
+    /// Enter ConfirmKill mode for the currently-selected session. No-op if
+    /// the filtered list is empty.
+    pub fn enter_kill_confirm(&mut self) {
+        if let Some(name) = self.selected_name() {
+            self.kill_target = Some(name.to_string());
+            self.mode = Mode::ConfirmKill;
+        }
+    }
+
+    pub fn cancel_kill(&mut self) {
+        self.kill_target = None;
+        self.mode = Mode::Pick;
+    }
+
+    /// User confirmed the kill. Move the target to `pending_kill` for the
+    /// picker loop to pick up, return to Pick mode.
+    pub fn confirm_kill(&mut self) {
+        self.pending_kill = self.kill_target.take();
+        self.mode = Mode::Pick;
+    }
+
+    /// Picker loop calls this each iteration. If a kill is pending, returns
+    /// the session name and clears the slot.
+    pub fn take_pending_kill(&mut self) -> Option<String> {
+        let target = self.pending_kill.take();
+        if target.is_some() {
+            self.sessions_dirty = true;
+        }
+        target
+    }
+}
+
+/// Case-insensitive substring match of `needle` against the session's
+/// name, label (if any), and project basename (if any).
+fn session_matches(session: &Session, needle_lower: &str) -> bool {
+    if session.name.to_lowercase().contains(needle_lower) {
+        return true;
+    }
+    if let Some(ref m) = session.metadata {
+        if let Some(ref label) = m.label
+            && label.to_lowercase().contains(needle_lower)
+        {
+            return true;
+        }
+        if let Some(ref project) = m.project
+            && project.to_lowercase().contains(needle_lower)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -496,5 +670,204 @@ mod tests {
         app.set_preview(Some("kept".into()));
         app.move_up();
         assert_eq!(app.preview.as_deref(), Some("kept"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Filter mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enter_filter_clears_filter_and_recomputes() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        assert_eq!(app.mode, Mode::Filter);
+        assert_eq!(app.filter, "");
+        assert_eq!(app.filtered_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn filter_char_narrows_visible_list() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "claude".chars() {
+            app.filter_char(c);
+        }
+        // make_sessions: index 1 = "claude-aihelp" — only one match
+        assert_eq!(app.filtered_indices, vec![1]);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected_name(), Some("claude-aihelp"));
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "CLAUDE".chars() {
+            app.filter_char(c);
+        }
+        assert_eq!(app.filtered_indices.len(), 1);
+    }
+
+    #[test]
+    fn filter_no_match_yields_empty_list() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "zzzzz".chars() {
+            app.filter_char(c);
+        }
+        assert!(app.filtered_indices.is_empty());
+        assert_eq!(app.selected_name(), None);
+    }
+
+    #[test]
+    fn filter_backspace_widens() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "claude".chars() {
+            app.filter_char(c);
+        }
+        assert_eq!(app.filtered_indices.len(), 1);
+        app.filter_backspace();
+        // "claud" still matches "claude-aihelp"
+        assert_eq!(app.filtered_indices.len(), 1);
+        for _ in 0..5 {
+            app.filter_backspace();
+        }
+        // empty filter — all visible
+        assert_eq!(app.filtered_indices.len(), 3);
+    }
+
+    #[test]
+    fn cancel_filter_returns_to_pick_with_clean_state() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        app.filter_char('z');
+        app.cancel_filter();
+        assert_eq!(app.mode, Mode::Pick);
+        assert_eq!(app.filter, "");
+        assert_eq!(app.filtered_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn filter_navigation_uses_filtered_indices() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        // No filter: 3 visible. move_down twice goes to last.
+        app.move_down();
+        app.move_down();
+        assert_eq!(app.selected, 2);
+        // move_down again — clamped at last.
+        app.move_down();
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn filter_select_by_number_uses_filtered_list() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "claude".chars() {
+            app.filter_char(c);
+        }
+        // Only one match. select_by_number(1) confirms it.
+        app.select_by_number(1);
+        if let Some(Action::Attach(name)) = &app.action {
+            assert_eq!(name, "claude-aihelp");
+        } else {
+            panic!("expected Attach action");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Kill confirm
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enter_kill_confirm_sets_target() {
+        let mut app = App::new(make_sessions());
+        app.enter_kill_confirm();
+        assert_eq!(app.mode, Mode::ConfirmKill);
+        assert_eq!(app.kill_target.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn confirm_kill_moves_target_to_pending() {
+        let mut app = App::new(make_sessions());
+        app.enter_kill_confirm();
+        app.confirm_kill();
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.kill_target.is_none());
+        let target = app.take_pending_kill();
+        assert_eq!(target.as_deref(), Some("main"));
+        assert!(app.sessions_dirty);
+    }
+
+    #[test]
+    fn cancel_kill_clears_target() {
+        let mut app = App::new(make_sessions());
+        app.enter_kill_confirm();
+        app.cancel_kill();
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.kill_target.is_none());
+        assert!(app.pending_kill.is_none());
+    }
+
+    #[test]
+    fn enter_kill_with_empty_filtered_list_is_noop() {
+        let mut app = App::new(make_sessions());
+        app.enter_filter_mode();
+        for c in "zzzzz".chars() {
+            app.filter_char(c);
+        }
+        app.enter_kill_confirm();
+        // No selection → no mode transition.
+        assert_eq!(app.mode, Mode::Filter);
+        assert!(app.kill_target.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Replace sessions (post-kill)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn replace_sessions_keeps_selection_on_same_name() {
+        let mut app = App::new(make_sessions());
+        app.move_down(); // selected = 1 ("claude-aihelp")
+        let new = vec![
+            Session {
+                name: "main".into(),
+                window_count: 1,
+                attached: false,
+                current_command: "bash".into(),
+                last_activity: Duration::from_secs(0),
+                metadata: None,
+            },
+            Session {
+                name: "claude-aihelp".into(),
+                window_count: 3,
+                attached: true,
+                current_command: "claude".into(),
+                last_activity: Duration::from_secs(10),
+                metadata: None,
+            },
+        ];
+        app.replace_sessions(new);
+        assert_eq!(app.selected_name(), Some("claude-aihelp"));
+    }
+
+    #[test]
+    fn replace_sessions_resets_selection_when_name_gone() {
+        let mut app = App::new(make_sessions());
+        app.move_down(); // selected = 1 ("claude-aihelp")
+        let new = vec![Session {
+            name: "main".into(),
+            window_count: 1,
+            attached: false,
+            current_command: "bash".into(),
+            last_activity: Duration::from_secs(0),
+            metadata: None,
+        }];
+        app.replace_sessions(new);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected_name(), Some("main"));
     }
 }

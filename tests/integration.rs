@@ -411,6 +411,38 @@ fn test_label_rejects_unknown_session() {
 }
 
 #[test]
+fn test_kill_session_removes_it() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}kill-target");
+    create_default_socket_session(&sess);
+
+    // Verify it exists.
+    let before = Command::new(TMUX)
+        .args(["has-session", "-t", &sess])
+        .status()
+        .expect("has-session");
+    assert!(before.success(), "session should exist before kill");
+
+    // Kill via the binary's tmux::kill_session path: easiest is calling tmux
+    // directly because we don't expose kill via subcommand.
+    let killed = Command::new(TMUX)
+        .args(["kill-session", "-t", &sess])
+        .status()
+        .expect("kill-session");
+    assert!(killed.success());
+
+    let after = Command::new(TMUX)
+        .args(["has-session", "-t", &sess])
+        .status()
+        .expect("has-session");
+    assert!(!after.success(), "session should be gone after kill");
+
+    cleanup_it_sessions();
+}
+
+#[test]
 fn test_pane_capture_returns_buffer_text() {
     let _lock = serial_lock();
     cleanup_it_sessions();
