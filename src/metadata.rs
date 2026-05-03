@@ -56,6 +56,134 @@ fn toml_string(s: &str) -> String {
     out
 }
 
+use crate::tmux;
+
+const KEYS: &[&str] = &["label", "project", "purpose", "label_at"];
+
+/// Read a session's metadata via per-key tmux show-options calls.
+/// Used by `tmux-picker show <session>`. The picker TUI uses the batch
+/// list-sessions parse path instead.
+pub fn read(session: &str) -> Result<Metadata, String> {
+    if !tmux::session_exists(session) {
+        return Err(format!("session '{session}' does not exist"));
+    }
+    Ok(Metadata {
+        label: tmux::get_user_option(session, "tmux_picker_label"),
+        project: tmux::get_user_option(session, "tmux_picker_project"),
+        purpose: tmux::get_user_option(session, "tmux_picker_purpose"),
+        label_at: tmux::get_user_option(session, "tmux_picker_label_at")
+            .and_then(|s| s.parse().ok()),
+    })
+}
+
+/// Write any non-None field of `m` to tmux user-options.
+/// None fields are left untouched (does NOT clear).
+pub fn write(session: &str, m: &Metadata) -> Result<(), String> {
+    if !tmux::session_exists(session) {
+        return Err(format!("session '{session}' does not exist"));
+    }
+    if let Some(ref v) = m.label {
+        tmux::set_user_option(session, "tmux_picker_label", v)?;
+    }
+    if let Some(ref v) = m.project {
+        tmux::set_user_option(session, "tmux_picker_project", v)?;
+    }
+    if let Some(ref v) = m.purpose {
+        tmux::set_user_option(session, "tmux_picker_purpose", v)?;
+    }
+    // Update label_at only if any of label/project/purpose was set.
+    if m.label.is_some() || m.project.is_some() || m.purpose.is_some() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        tmux::set_user_option(session, "tmux_picker_label_at", &now.to_string())?;
+    }
+    Ok(())
+}
+
+/// Remove every @tmux_picker_* option from a session.
+pub fn clear(session: &str) -> Result<(), String> {
+    if !tmux::session_exists(session) {
+        return Err(format!("session '{session}' does not exist"));
+    }
+    for key in KEYS {
+        let full = format!("tmux_picker_{key}");
+        // Ignore unset-on-already-unset errors; tmux returns non-zero for those.
+        let _ = tmux::unset_user_option(session, &full);
+    }
+    Ok(())
+}
+
+/// Auto-detect project + label from session's active pane cwd.
+/// Never overwrites a manually-set label or purpose.
+pub fn auto_detect(session: &str) -> Result<(), String> {
+    if !tmux::session_exists(session) {
+        return Err(format!("session '{session}' does not exist"));
+    }
+    let cwd = tmux::pane_current_path(session)?;
+    let project = walk_up_to_git_root(&cwd).unwrap_or(cwd);
+
+    tmux::set_user_option(session, "tmux_picker_project", &project)?;
+
+    let existing_label = tmux::get_user_option(session, "tmux_picker_label");
+    if existing_label.is_none()
+        && let Some(base) = std::path::Path::new(&project).file_name()
+        && let Some(s) = base.to_str()
+    {
+        tmux::set_user_option(session, "tmux_picker_label", s)?;
+    }
+
+    if std::path::Path::new(&project).join(".git").exists()
+        && tmux::get_user_option(session, "tmux_picker_purpose").is_none()
+        && let Some(branch) = git_current_branch(&project)
+    {
+        tmux::set_user_option(
+            session,
+            "tmux_picker_purpose",
+            &format!("branch:{branch}"),
+        )?;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    tmux::set_user_option(session, "tmux_picker_label_at", &now.to_string())?;
+
+    Ok(())
+}
+
+/// Walk from `start` up the directory tree until a `.git` directory exists.
+/// Returns the path containing `.git`, or None if not found before root.
+pub fn walk_up_to_git_root(start: &str) -> Option<String> {
+    let mut cur = std::path::PathBuf::from(start);
+    loop {
+        if cur.join(".git").exists() {
+            return cur.to_str().map(String::from);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+fn git_current_branch(repo: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", repo, "branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +232,20 @@ mod tests {
     #[test]
     fn toml_string_escapes_backslash_and_newline() {
         assert_eq!(toml_string("a\\b\nc"), "\"a\\\\b\\nc\"");
+    }
+
+    #[test]
+    fn walk_up_finds_repo_root() {
+        let crate_root = env!("CARGO_MANIFEST_DIR");
+        let started_in = format!("{crate_root}/src");
+        let found = walk_up_to_git_root(&started_in).unwrap();
+        assert_eq!(found, crate_root);
+    }
+
+    #[test]
+    fn walk_up_terminates_below_root_without_git() {
+        // Don't assert specific result (some systems may have /.git);
+        // assert termination without panic.
+        let _ = walk_up_to_git_root("/tmp");
     }
 }
