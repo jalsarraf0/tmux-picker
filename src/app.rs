@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use crate::action::Action;
+use crate::config::Config;
 use crate::session::{Session, validate_session_name};
 use crate::tmux;
-
-const TIMEOUT_SECS: u64 = 10;
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -46,10 +45,12 @@ pub struct App {
     /// Set by `confirm_kill` for the picker loop to consume via
     /// `take_pending_kill`. Decouples input handling from tmux I/O.
     pub pending_kill: Option<String>,
+    /// Auto-attach timeout in seconds. 0 disables auto-attach.
+    pub timeout_secs: u64,
 }
 
 impl App {
-    pub fn new(sessions: Vec<Session>) -> Self {
+    pub fn new(sessions: Vec<Session>, config: &Config) -> Self {
         let filtered_indices = (0..sessions.len()).collect();
         App {
             sessions,
@@ -57,7 +58,7 @@ impl App {
             mode: Mode::Pick,
             input: String::new(),
             action: None,
-            timeout_remaining: Duration::from_secs(TIMEOUT_SECS),
+            timeout_remaining: Duration::from_secs(config.timeout_secs),
             input_error: None,
             preview: None,
             preview_for: None,
@@ -66,6 +67,7 @@ impl App {
             sessions_dirty: false,
             kill_target: None,
             pending_kill: None,
+            timeout_secs: config.timeout_secs,
         }
     }
 
@@ -254,9 +256,10 @@ impl App {
     // -----------------------------------------------------------------------
 
     /// Subtract elapsed from the remaining timeout. If timeout reaches zero
-    /// and we are in Pick mode, call auto_select.
+    /// and we are in Pick mode, call auto_select. `timeout_secs == 0` disables
+    /// auto-attach entirely.
     pub fn tick(&mut self, elapsed: Duration) {
-        if self.mode != Mode::Pick {
+        if self.mode != Mode::Pick || self.timeout_secs == 0 {
             return;
         }
         self.timeout_remaining = self.timeout_remaining.saturating_sub(elapsed);
@@ -296,7 +299,7 @@ impl App {
     }
 
     fn reset_timeout(&mut self) {
-        self.timeout_remaining = Duration::from_secs(TIMEOUT_SECS);
+        self.timeout_remaining = Duration::from_secs(self.timeout_secs);
     }
 
     // -----------------------------------------------------------------------
@@ -440,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_new_starts_at_zero() {
-        let app = App::new(make_sessions());
+        let app = App::new(make_sessions(), &Config::default());
         assert_eq!(app.selected, 0);
         assert_eq!(app.mode, Mode::Pick);
         assert!(app.action.is_none());
@@ -448,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_move_down() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.move_down();
         assert_eq!(app.selected, 1);
         app.move_down();
@@ -460,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_move_up() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         // At 0 already; should stay.
         app.move_up();
         assert_eq!(app.selected, 0);
@@ -472,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_select_by_number() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.select_by_number(2);
         assert_eq!(app.selected, 1);
         assert!(app.action.is_some());
@@ -485,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_select_by_number_out_of_range() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.select_by_number(5);
         assert!(app.action.is_none());
         assert_eq!(app.selected, 0);
@@ -493,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_select_by_number_zero() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.select_by_number(0);
         assert!(app.action.is_none());
         assert_eq!(app.selected, 0);
@@ -501,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_confirm_selection() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.move_down();
         app.confirm_selection();
         if let Some(Action::Attach(name)) = &app.action {
@@ -514,7 +517,7 @@ mod tests {
 
     #[test]
     fn test_shell() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.shell();
         assert!(matches!(app.action, Some(Action::Shell)));
         assert!(app.should_quit());
@@ -522,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_enter_new_mode() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.input.push_str("leftover");
         app.enter_new_mode();
         assert_eq!(app.mode, Mode::NewInput);
@@ -532,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_cancel_input() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_new_mode();
         app.input_char('x');
         app.cancel_input();
@@ -543,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_input_char_and_backspace() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.input_char('a');
         app.input_char('b');
         assert_eq!(app.input, "ab");
@@ -558,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_input_clears_error() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_new_mode();
         app.input_error = Some("test error".into());
         // Typing a char should clear the error
@@ -572,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_confirm_empty_input_cancels() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_new_mode();
         app.confirm_input();
         assert_eq!(app.mode, Mode::Pick);
@@ -581,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_confirm_invalid_input() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_new_mode();
         // "..." → validate_session_name returns None
         for c in "...".chars() {
@@ -594,15 +597,43 @@ mod tests {
 
     #[test]
     fn test_timeout_auto_selects() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.tick(Duration::from_secs(10));
+        assert!(app.action.is_some());
+    }
+
+    #[test]
+    fn test_timeout_zero_disables_auto_attach() {
+        // timeout_secs = 0 means never auto-attach. Even after a long elapsed,
+        // app.action stays None.
+        let cfg = Config {
+            timeout_secs: 0,
+            ..Config::default()
+        };
+        let mut app = App::new(make_sessions(), &cfg);
+        app.tick(Duration::from_secs(3600));
+        assert!(app.action.is_none());
+    }
+
+    #[test]
+    fn test_custom_timeout_secs_applied() {
+        let cfg = Config {
+            timeout_secs: 3,
+            ..Config::default()
+        };
+        let mut app = App::new(make_sessions(), &cfg);
+        // 2s elapsed: 1s remaining, no action.
+        app.tick(Duration::from_secs(2));
+        assert!(app.action.is_none());
+        // Total 4s elapsed: should fire auto-select.
+        app.tick(Duration::from_secs(2));
         assert!(app.action.is_some());
     }
 
     #[test]
     fn test_timeout_picks_first_detached() {
         // make_sessions: index 0 = "main" (detached), index 1 = "claude-aihelp" (attached)
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.tick(Duration::from_secs(10));
         if let Some(Action::Attach(name)) = &app.action {
             // First detached in the list is index 0, "main".
@@ -614,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_interaction_resets_timeout() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         // Advance to 1 second remaining.
         app.tick(Duration::from_secs(9));
         assert!(app.action.is_none());
@@ -627,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_timeout_does_not_fire_in_input_mode() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_new_mode();
         app.tick(Duration::from_secs(15));
         assert!(app.action.is_none());
@@ -635,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_empty_sessions_auto_select_shell() {
-        let mut app = App::new(vec![]);
+        let mut app = App::new(vec![], &Config::default());
         app.tick(Duration::from_secs(10));
         assert!(matches!(app.action, Some(Action::Shell)));
     }
@@ -646,7 +677,7 @@ mod tests {
 
     #[test]
     fn preview_is_current_after_set() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.set_preview(Some("hello".into()));
         assert!(app.preview_is_current());
         assert_eq!(app.preview.as_deref(), Some("hello"));
@@ -654,7 +685,7 @@ mod tests {
 
     #[test]
     fn preview_invalidated_on_navigation() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.set_preview(Some("first".into()));
         app.move_down();
         // After navigation, preview is invalidated (set to None) so the loop
@@ -666,7 +697,7 @@ mod tests {
     #[test]
     fn preview_persists_when_navigation_no_op() {
         // make_sessions returns 3; selected starts at 0. move_up at 0 is no-op.
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.set_preview(Some("kept".into()));
         app.move_up();
         assert_eq!(app.preview.as_deref(), Some("kept"));
@@ -678,7 +709,7 @@ mod tests {
 
     #[test]
     fn enter_filter_clears_filter_and_recomputes() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         assert_eq!(app.mode, Mode::Filter);
         assert_eq!(app.filter, "");
@@ -687,7 +718,7 @@ mod tests {
 
     #[test]
     fn filter_char_narrows_visible_list() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "claude".chars() {
             app.filter_char(c);
@@ -700,7 +731,7 @@ mod tests {
 
     #[test]
     fn filter_is_case_insensitive() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "CLAUDE".chars() {
             app.filter_char(c);
@@ -710,7 +741,7 @@ mod tests {
 
     #[test]
     fn filter_no_match_yields_empty_list() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "zzzzz".chars() {
             app.filter_char(c);
@@ -721,7 +752,7 @@ mod tests {
 
     #[test]
     fn filter_backspace_widens() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "claude".chars() {
             app.filter_char(c);
@@ -739,7 +770,7 @@ mod tests {
 
     #[test]
     fn cancel_filter_returns_to_pick_with_clean_state() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         app.filter_char('z');
         app.cancel_filter();
@@ -750,7 +781,7 @@ mod tests {
 
     #[test]
     fn filter_navigation_uses_filtered_indices() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         // No filter: 3 visible. move_down twice goes to last.
         app.move_down();
@@ -763,7 +794,7 @@ mod tests {
 
     #[test]
     fn filter_select_by_number_uses_filtered_list() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "claude".chars() {
             app.filter_char(c);
@@ -783,7 +814,7 @@ mod tests {
 
     #[test]
     fn enter_kill_confirm_sets_target() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_kill_confirm();
         assert_eq!(app.mode, Mode::ConfirmKill);
         assert_eq!(app.kill_target.as_deref(), Some("main"));
@@ -791,7 +822,7 @@ mod tests {
 
     #[test]
     fn confirm_kill_moves_target_to_pending() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_kill_confirm();
         app.confirm_kill();
         assert_eq!(app.mode, Mode::Pick);
@@ -803,7 +834,7 @@ mod tests {
 
     #[test]
     fn cancel_kill_clears_target() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_kill_confirm();
         app.cancel_kill();
         assert_eq!(app.mode, Mode::Pick);
@@ -813,7 +844,7 @@ mod tests {
 
     #[test]
     fn enter_kill_with_empty_filtered_list_is_noop() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "zzzzz".chars() {
             app.filter_char(c);
@@ -830,7 +861,7 @@ mod tests {
 
     #[test]
     fn replace_sessions_keeps_selection_on_same_name() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.move_down(); // selected = 1 ("claude-aihelp")
         let new = vec![
             Session {
@@ -856,7 +887,7 @@ mod tests {
 
     #[test]
     fn replace_sessions_resets_selection_when_name_gone() {
-        let mut app = App::new(make_sessions());
+        let mut app = App::new(make_sessions(), &Config::default());
         app.move_down(); // selected = 1 ("claude-aihelp")
         let new = vec![Session {
             name: "main".into(),

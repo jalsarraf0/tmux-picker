@@ -7,6 +7,13 @@ use ratatui::{
 };
 
 use crate::app::{App, Mode};
+use crate::config::Theme;
+
+/// Render-time context: theme, future render-only flags. Borrowed so the UI
+/// owns nothing.
+pub struct UiContext<'a> {
+    pub theme: &'a Theme,
+}
 
 fn format_name_display(session: &crate::session::Session) -> String {
     match session.metadata.as_ref().and_then(|m| m.label.as_deref()) {
@@ -40,7 +47,7 @@ fn collapse_home(path: &str) -> String {
     path.to_string()
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &App, ctx: &UiContext<'_>) {
     let area = frame.area();
 
     let detail_height: u16 = app
@@ -66,14 +73,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    draw_sessions(frame, app, chunks[0]);
+    draw_sessions(frame, app, ctx, chunks[0]);
     if detail_height > 0 {
         draw_detail(frame, app, chunks[1]);
     }
     if preview_height > 0 {
         draw_preview(frame, app, chunks[2]);
     }
-    draw_actions(frame, app, chunks[3]);
+    draw_actions(frame, app, ctx, chunks[3]);
     draw_help(frame, app, chunks[4]);
 }
 
@@ -109,7 +116,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
 // Sessions table
 // ---------------------------------------------------------------------------
 
-fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
     let block = Block::default()
         .title(" tmux sessions ")
         .borders(Borders::ALL)
@@ -142,7 +149,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray)
             } else if session.is_claude() {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(ctx.theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -165,7 +172,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let row_style = if is_selected {
-                Style::default().bg(Color::DarkGray)
+                Style::default().bg(ctx.theme.selection_bg)
             } else {
                 Style::default()
             };
@@ -202,38 +209,35 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 // Actions bar
 // ---------------------------------------------------------------------------
 
-fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_actions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
     let block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT)
         .border_style(Style::default().fg(Color::DarkGray));
+
+    let accent = ctx.theme.accent;
+    let warning = ctx.theme.warning;
 
     let line = match app.mode {
         Mode::Pick => Line::from(vec![
             Span::raw("    "),
             Span::styled(
                 "n",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  new session     "),
             Span::styled(
                 "/",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  filter     "),
             Span::styled(
                 "K",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(warning).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  kill     "),
             Span::styled(
                 "s",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  shell"),
         ]),
@@ -284,7 +288,7 @@ fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(vec![
                 Span::styled(
                     "  kill ",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    Style::default().fg(warning).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     target.to_string(),

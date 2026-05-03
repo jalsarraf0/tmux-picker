@@ -8,6 +8,7 @@ description = "TUI session picker for tmux on SSH login"
 ratatui = "0.30"
 crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 
 [lib]
 name = "tmux_picker"

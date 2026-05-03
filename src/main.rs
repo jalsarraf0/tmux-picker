@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tmux_picker::action::Action;
 use tmux_picker::app::App;
 use tmux_picker::cli::{Cli, Command};
+use tmux_picker::config::Config;
 use tmux_picker::{input, metadata, tmux, ui};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
@@ -55,6 +56,9 @@ fn run_picker() -> ExitCode {
 }
 
 fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
+    // Load user config (silent fall-back to defaults on any error).
+    let config = Config::load();
+
     // Query tmux — single call, no TOCTOU race
     let sessions = match tmux::list_sessions() {
         Ok(s) if s.is_empty() => return Ok(Action::New("main".into())),
@@ -70,13 +74,16 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     let backend = ratatui::backend::CrosstermBackend::new(stderr());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(sessions);
+    let ui_ctx = ui::UiContext {
+        theme: &config.theme,
+    };
+    let mut app = App::new(sessions, &config);
     let mut last_tick = Instant::now();
     refresh_preview_if_needed(&mut app);
 
     // Main loop
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, &app, &ui_ctx))?;
 
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)?

@@ -104,27 +104,31 @@ mod tests {
     use super::*;
     use crate::action::Action;
     use crate::app::Mode;
+    use crate::config::Config;
     use crate::session::Session;
 
     fn make_app() -> App {
-        App::new(vec![
-            Session {
-                name: "main".into(),
-                window_count: 1,
-                attached: false,
-                current_command: "bash".into(),
-                last_activity: Duration::from_secs(0),
-                metadata: None,
-            },
-            Session {
-                name: "work".into(),
-                window_count: 2,
-                attached: false,
-                current_command: "vim".into(),
-                last_activity: Duration::from_secs(100),
-                metadata: None,
-            },
-        ])
+        App::new(
+            vec![
+                Session {
+                    name: "main".into(),
+                    window_count: 1,
+                    attached: false,
+                    current_command: "bash".into(),
+                    last_activity: Duration::from_secs(0),
+                    metadata: None,
+                },
+                Session {
+                    name: "work".into(),
+                    window_count: 2,
+                    attached: false,
+                    current_command: "vim".into(),
+                    last_activity: Duration::from_secs(100),
+                    metadata: None,
+                },
+            ],
+            &Config::default(),
+        )
     }
 
     fn key(code: KeyCode) -> KeyEvent {
