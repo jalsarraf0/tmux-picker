@@ -7,12 +7,18 @@ stdout and execs tmux (or drops to a shell if the user picked `s`).
 ## Features
 
 - Color-coded session list with attached indicator, command, and idle time.
-- 10-second auto-attach to the most recent detached session.
+- 10-second auto-attach to the most recent detached session (configurable).
 - Numbered + arrow + j/k navigation.
 - New-session input with name validation.
 - Per-session metadata (label / project / purpose) stored as tmux user-options.
 - Label-aware display: shows `label (session-name)` when a label is set, plus
   a project-path / purpose detail line under the selected session.
+- Preview pane: last 6 lines of the highlighted session's active pane.
+- Live filter (`/`): case-insensitive substring match on session name, label,
+  and project path. `Enter` keeps the filter active, `Esc` clears it.
+- Kill session (`K`) with a `y`/`Y` confirmation prompt; any other key cancels.
+- Optional user config at `~/.config/tmux-picker/config.toml` for the auto-attach
+  timeout and theme colors.
 
 ## Build / Install
 
@@ -101,6 +107,30 @@ Metadata lives in tmux user-options on each session:
 
 `tmux kill-session` removes the metadata along with the session. There is no
 external state file.
+
+## Configuration
+
+Optional TOML at `~/.config/tmux-picker/config.toml` (or
+`$XDG_CONFIG_HOME/tmux-picker/config.toml` if set). All keys are optional, the
+file may be absent, and parse errors fall back to defaults with a single
+stderr warning — login auto-attach is never blocked by a malformed config.
+
+```toml
+# Auto-attach countdown for the most recent detached session, in seconds.
+# 0 disables auto-attach (the picker waits for a manual choice).
+timeout_secs = 10
+
+[theme]
+accent = "cyan"            # numbers, attached marker, prompt accents
+warning = "red"            # kill-confirm prompt, error highlights
+selection_bg = "darkgray"  # highlighted row background
+```
+
+Recognized color names (case-insensitive): `black`, `red`, `green`, `yellow`,
+`blue`, `magenta`, `cyan`, `white`, `darkgray` (aliases: `gray`, `grey`),
+`lightred`, `lightgreen`, `lightyellow`, `lightblue`, `lightmagenta`,
+`lightcyan`. Unknown names log a warning to stderr and keep that field's
+default.
 
 ## Test
 
