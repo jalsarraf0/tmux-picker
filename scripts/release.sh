@@ -194,7 +194,7 @@ fi
 step "GitHub release"
 if ! command -v gh >/dev/null 2>&1; then
     note "gh CLI not installed — skipping. Manual upload:"
-    note "  https://github.com/jalsarraf/tmux-picker/releases/new?tag=$TAG"
+    note "  https://github.com/jalsarraf0/tmux-picker/releases/new?tag=$TAG"
 elif ! gh auth status >/dev/null 2>&1; then
     note "gh not authenticated — skipping. Run: gh auth login"
 elif confirm "Create GitHub release $TAG and upload the tarball?"; then
