@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
+use crate::metadata::Metadata;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Session {
     pub name: String,
@@ -8,6 +10,7 @@ pub struct Session {
     pub attached: bool,
     pub current_command: String,
     pub last_activity: Duration,
+    pub metadata: Option<Metadata>,
 }
 
 impl Session {
@@ -123,6 +126,7 @@ mod tests {
             attached,
             current_command: String::new(),
             last_activity: Duration::from_secs(secs),
+            metadata: None,
         }
     }
 
@@ -398,6 +402,7 @@ mod tests {
             attached: false,
             current_command: String::new(),
             last_activity: Duration::from_secs(0),
+            metadata: None,
         };
         assert_eq!(s.windows_display(), "1 win");
     }
@@ -410,6 +415,7 @@ mod tests {
             attached: false,
             current_command: String::new(),
             last_activity: Duration::from_secs(0),
+            metadata: None,
         };
         assert_eq!(s.windows_display(), "5 win");
     }

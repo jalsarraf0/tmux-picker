@@ -207,6 +207,7 @@ mod tests {
                 attached: false,
                 current_command: "bash".into(),
                 last_activity: Duration::from_secs(100),
+                metadata: None,
             },
             Session {
                 name: "claude-aihelp".into(),
@@ -214,6 +215,7 @@ mod tests {
                 attached: true,
                 current_command: "claude".into(),
                 last_activity: Duration::from_secs(10),
+                metadata: None,
             },
             Session {
                 name: "work".into(),
@@ -221,6 +223,7 @@ mod tests {
                 attached: false,
                 current_command: "vim".into(),
                 last_activity: Duration::from_secs(500),
+                metadata: None,
             },
         ]
     }

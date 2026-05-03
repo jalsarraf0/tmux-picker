@@ -100,16 +100,17 @@ pub fn parse_pane_commands(output: &str) -> HashMap<String, String> {
 
 /// Parse one line of `list-sessions` output into a `Session`.
 ///
-/// Format: `session_name|window_count|session_attached|session_activity_epoch`
+/// Format (8 fields): `name|windows|attached|activity|label|project|purpose|label_at`
+/// Backward-compat: 4-field input (no metadata) also accepted; metadata = None.
 ///
-/// Returns `None` if the line does not have exactly 4 `|`-separated fields.
-/// Numeric parse failures fall back to 0 (graceful degradation).
+/// Returns `None` if the line has fewer than 4 `|`-separated fields or empty
+/// name. Numeric parse failures fall back to 0 (graceful degradation).
 pub fn parse_session_line(
     line: &str,
     now_epoch: u64,
     commands: &HashMap<String, String>,
 ) -> Option<Session> {
-    let parts: Vec<&str> = line.splitn(4, '|').collect();
+    let parts: Vec<&str> = line.splitn(8, '|').collect();
     if parts.len() < 4 {
         return None;
     }
@@ -134,13 +135,38 @@ pub fn parse_session_line(
         .cloned()
         .unwrap_or_else(|| "?".to_string());
 
+    let metadata = if parts.len() >= 8 {
+        let label = nonempty(parts[4]);
+        let project = nonempty(parts[5]);
+        let purpose = nonempty(parts[6]);
+        let label_at = parts[7].parse::<u64>().ok();
+        let m = crate::metadata::Metadata {
+            label,
+            project,
+            purpose,
+            label_at,
+        };
+        if m.is_empty() { None } else { Some(m) }
+    } else {
+        None
+    };
+
     Some(Session {
         name,
         window_count,
         attached,
         current_command,
         last_activity,
+        metadata,
     })
+}
+
+fn nonempty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +186,11 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
     .unwrap_or_default();
     let commands = parse_pane_commands(&pane_output);
 
-    // Query sessions.
+    // Query sessions (8-field format includes user-options for metadata).
     let session_output = run_tmux(&[
         "list-sessions",
         "-F",
-        "#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}",
+        "#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}|#{@tmux_picker_label}|#{@tmux_picker_project}|#{@tmux_picker_purpose}|#{@tmux_picker_label_at}",
     ])?;
 
     let now_epoch = std::time::SystemTime::now()
@@ -270,6 +296,48 @@ mod tests {
         let s = parse_session_line("test|notanum|0|notanum", 1000, &commands).unwrap();
         assert_eq!(s.window_count, 0);
         assert_eq!(s.last_activity, Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_parse_session_line_with_full_metadata() {
+        let commands = HashMap::new();
+        let s = parse_session_line(
+            "main|2|0|1000|My Label|/home/u/git/app|PR #1|1500",
+            1300,
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(s.name, "main");
+        let m = s.metadata.unwrap();
+        assert_eq!(m.label.as_deref(), Some("My Label"));
+        assert_eq!(m.project.as_deref(), Some("/home/u/git/app"));
+        assert_eq!(m.purpose.as_deref(), Some("PR #1"));
+        assert_eq!(m.label_at, Some(1500));
+    }
+
+    #[test]
+    fn test_parse_session_line_empty_metadata_fields() {
+        let commands = HashMap::new();
+        let s = parse_session_line("main|2|0|1000||||", 1300, &commands).unwrap();
+        assert!(s.metadata.is_none());
+    }
+
+    #[test]
+    fn test_parse_session_line_partial_metadata_label_only() {
+        let commands = HashMap::new();
+        let s = parse_session_line("main|2|0|1000|Hi|||", 1300, &commands).unwrap();
+        let m = s.metadata.unwrap();
+        assert_eq!(m.label.as_deref(), Some("Hi"));
+        assert!(m.project.is_none());
+        assert!(m.purpose.is_none());
+        assert!(m.label_at.is_none());
+    }
+
+    #[test]
+    fn test_parse_session_line_4_field_backward_compat() {
+        let commands = HashMap::new();
+        let s = parse_session_line("main|2|0|1000", 1300, &commands).unwrap();
+        assert!(s.metadata.is_none());
     }
 
     // -----------------------------------------------------------------------

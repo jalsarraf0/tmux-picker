@@ -81,6 +81,7 @@ mod tests {
                 attached: false,
                 current_command: "bash".into(),
                 last_activity: Duration::from_secs(0),
+                metadata: None,
             },
             Session {
                 name: "work".into(),
@@ -88,6 +89,7 @@ mod tests {
                 attached: false,
                 current_command: "vim".into(),
                 last_activity: Duration::from_secs(100),
+                metadata: None,
             },
         ])
     }
