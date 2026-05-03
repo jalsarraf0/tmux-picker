@@ -152,6 +152,17 @@ fn draw_preview_windows(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(para, area);
 }
 
+/// Map a screen-y coordinate from a mouse event to a 0-indexed session
+/// row in the visible list. Returns None if the click was outside the
+/// rows region. The sessions block occupies the top of the screen with
+/// one border row above the first session row.
+pub fn row_for_y(y: u16) -> Option<usize> {
+    if y == 0 {
+        return None;
+    }
+    Some((y - 1) as usize)
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -521,6 +532,8 @@ fn help_overlay_lines(ctx: &UiContext<'_>) -> Vec<String> {
         String::from("    o            cycle sort modes"),
         String::from("    y            yank session name to clipboard"),
         String::from("    Tab          toggle preview / windows view"),
+        String::from("    click        select row"),
+        String::from("    double-click attach to row"),
         String::from("    ?            show this help"),
         String::new(),
         String::from("  Filter mode"),

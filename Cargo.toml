@@ -9,6 +9,8 @@ ratatui = "0.30"
 crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+nucleo-matcher = "0.3"
+signal-hook = { version = "0.3", default-features = false }
 
 [lib]
 name = "tmux_picker"

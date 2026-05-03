@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32String};
 
 use crate::action::Action;
 use crate::clipboard;
@@ -130,6 +133,10 @@ pub struct App {
     /// Cached multi-window snapshot for `WindowsList`. Refilled by the
     /// picker loop when the cache is stale or empty.
     pub preview_windows: Option<Vec<crate::tmux::WindowSnapshot>>,
+    /// Reusable fuzzy matcher; allocator state survives across keystrokes.
+    pub matcher: Matcher,
+    /// Last mouse-down `(row, when)` for double-click detection.
+    pub last_click: Option<(usize, Instant)>,
 }
 
 impl App {
@@ -158,6 +165,8 @@ impl App {
             flash_remaining: Duration::ZERO,
             preview_mode: PreviewMode::Summary,
             preview_windows: None,
+            matcher: Matcher::new(MatcherConfig::DEFAULT),
+            last_click: None,
         };
         app.sort_sessions();
         app.recompute_filter();
@@ -246,20 +255,28 @@ impl App {
         self.reset_timeout();
     }
 
-    /// Recompute `filtered_indices` based on `filter`. Empty filter = all.
+    /// Recompute `filtered_indices` based on `filter`. Empty filter keeps
+    /// the original session order. A non-empty filter is matched fuzzily
+    /// (subseq) against name, label, and project — the indices come back
+    /// ordered by score descending so the best match floats to the top.
     pub fn recompute_filter(&mut self) {
-        let f = self.filter.to_lowercase();
-        if f.is_empty() {
+        if self.filter.is_empty() {
             self.filtered_indices = (0..self.sessions.len()).collect();
-        } else {
-            self.filtered_indices = self
-                .sessions
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| session_matches(s, &f))
-                .map(|(i, _)| i)
-                .collect();
+            self.clamp_selected();
+            return;
         }
+        let pattern = Pattern::parse(&self.filter, CaseMatching::Ignore, Normalization::Smart);
+        let mut scored: Vec<(usize, u32)> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| {
+                fuzzy_score_session(&pattern, &mut self.matcher, s).map(|score| (idx, score))
+            })
+            .collect();
+        // Highest score first; ties preserve original insertion order.
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        self.filtered_indices = scored.into_iter().map(|(idx, _)| idx).collect();
         self.clamp_selected();
     }
 
@@ -655,27 +672,58 @@ impl App {
         self.preview_windows = None;
         self.reset_timeout();
     }
+
+    // -----------------------------------------------------------------------
+    // Mouse
+    // -----------------------------------------------------------------------
+
+    /// Handle a left-button-down on a visible row. The first click selects;
+    /// a second click on the same row within 500 ms confirms (attaches).
+    pub fn handle_mouse_click(&mut self, row: usize, now: Instant) {
+        if row >= self.filtered_indices.len() {
+            return;
+        }
+        self.selected = row;
+        self.preview = None;
+        self.preview_for = None;
+        self.preview_windows = None;
+        self.reset_timeout();
+        let double_click = matches!(
+            self.last_click,
+            Some((prev_row, prev_when))
+                if prev_row == row
+                    && now.saturating_duration_since(prev_when) <= Duration::from_millis(500)
+        );
+        if double_click {
+            self.last_click = None;
+            self.confirm_selection();
+        } else {
+            self.last_click = Some((row, now));
+        }
+    }
 }
 
-/// Case-insensitive substring match of `needle` against the session's
-/// name, label (if any), and project basename (if any).
-fn session_matches(session: &Session, needle_lower: &str) -> bool {
-    if session.name.to_lowercase().contains(needle_lower) {
-        return true;
-    }
+/// Fuzzy-match a session against the pattern. Returns the highest score
+/// across the session's name, label, and project. None when no field
+/// matches.
+fn fuzzy_score_session(pattern: &Pattern, matcher: &mut Matcher, session: &Session) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    let mut consider = |s: &str| {
+        let utf32 = Utf32String::from(s);
+        if let Some(score) = pattern.score(utf32.slice(..), matcher) {
+            best = Some(best.map_or(score, |prev| prev.max(score)));
+        }
+    };
+    consider(&session.name);
     if let Some(ref m) = session.metadata {
-        if let Some(ref label) = m.label
-            && label.to_lowercase().contains(needle_lower)
-        {
-            return true;
+        if let Some(ref label) = m.label {
+            consider(label);
         }
-        if let Some(ref project) = m.project
-            && project.to_lowercase().contains(needle_lower)
-        {
-            return true;
+        if let Some(ref project) = m.project {
+            consider(project);
         }
     }
-    false
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,5 +1501,113 @@ mod tests {
         app.cycle_preview_mode();
         assert!(app.preview.is_none());
         assert!(app.preview_windows.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Fuzzy filter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fuzzy_filter_matches_subsequence() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_filter_mode();
+        // "ca" should match "claude-aihelp" but not "main" or "work".
+        for c in "ca".chars() {
+            app.filter_char(c);
+        }
+        let names: Vec<&str> = app
+            .filtered_indices
+            .iter()
+            .map(|&i| app.sessions[i].name.as_str())
+            .collect();
+        assert_eq!(names, ["claude-aihelp"]);
+    }
+
+    #[test]
+    fn fuzzy_filter_orders_by_score() {
+        let sessions = vec![
+            Session {
+                name: "claude-frontend".into(),
+                ..Default::default()
+            },
+            Session {
+                name: "back-end-claude".into(),
+                ..Default::default()
+            },
+            Session {
+                name: "main".into(),
+                ..Default::default()
+            },
+        ];
+        let mut app = App::new(sessions, &Config::default());
+        app.enter_filter_mode();
+        for c in "claude".chars() {
+            app.filter_char(c);
+        }
+        let names: Vec<&str> = app
+            .filtered_indices
+            .iter()
+            .map(|&i| app.sessions[i].name.as_str())
+            .collect();
+        // The picker doesn't enforce a specific ordering between two
+        // sessions whose names both contain "claude", but `main` must be
+        // missing entirely.
+        assert!(names.contains(&"claude-frontend"));
+        assert!(names.contains(&"back-end-claude"));
+        assert!(!names.contains(&"main"));
+    }
+
+    #[test]
+    fn fuzzy_filter_empty_keeps_full_order() {
+        let app = App::new(make_sessions(), &Config::default());
+        assert_eq!(app.filtered_indices.len(), 3);
+        assert_eq!(app.filtered_indices, [0, 1, 2]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn click_selects_target_row() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.handle_mouse_click(2, Instant::now());
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn click_outside_visible_range_is_noop() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.handle_mouse_click(99, Instant::now());
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn double_click_within_window_confirms() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        let now = Instant::now();
+        app.handle_mouse_click(1, now);
+        assert!(app.action.is_none());
+        app.handle_mouse_click(1, now + Duration::from_millis(200));
+        assert!(app.action.is_some());
+    }
+
+    #[test]
+    fn double_click_after_window_does_not_confirm() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        let now = Instant::now();
+        app.handle_mouse_click(1, now);
+        app.handle_mouse_click(1, now + Duration::from_millis(800));
+        assert!(app.action.is_none());
+    }
+
+    #[test]
+    fn click_on_different_row_does_not_confirm() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        let now = Instant::now();
+        app.handle_mouse_click(0, now);
+        app.handle_mouse_click(1, now + Duration::from_millis(200));
+        assert!(app.action.is_none());
+        assert_eq!(app.selected, 1);
     }
 }

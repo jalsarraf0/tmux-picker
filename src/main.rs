@@ -1,12 +1,16 @@
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
+};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use std::io::stderr;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tmux_picker::action::Action;
-use tmux_picker::app::App;
+use tmux_picker::app::{App, Mode};
 use tmux_picker::cli::{Cli, Command};
 use tmux_picker::config::Config;
 use tmux_picker::{input, metadata, tmux, ui};
@@ -19,7 +23,7 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
-        let _ = crossterm::execute!(stderr(), LeaveAlternateScreen);
+        let _ = crossterm::execute!(stderr(), DisableMouseCapture, LeaveAlternateScreen);
     }
 }
 
@@ -78,7 +82,7 @@ fn run_picker() -> ExitCode {
 
 fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     // Load user config (silent fall-back to defaults on any error).
-    let config = Config::load();
+    let mut config = Config::load();
 
     // Query tmux — single call, no TOCTOU race
     let mut sessions = match tmux::list_sessions() {
@@ -89,38 +93,76 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     };
     tmux::populate_markers(&mut sessions, &config.markers);
 
+    // SIGHUP → reload config in place. Best-effort: failure to install
+    // the handler is logged but does not abort startup.
+    let reload_flag = Arc::new(AtomicBool::new(false));
+    if let Err(e) =
+        signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_flag))
+    {
+        eprintln!("tmux-picker: SIGHUP handler not installed: {e}");
+    }
+
     // Init terminal on stderr (stdout is for the protocol)
     terminal::enable_raw_mode()?;
     let _guard = TerminalGuard; // cleanup on any exit path
-    crossterm::execute!(stderr(), EnterAlternateScreen)?;
+    crossterm::execute!(stderr(), EnterAlternateScreen, EnableMouseCapture)?;
     let backend = ratatui::backend::CrosstermBackend::new(stderr());
     let mut terminal = Terminal::new(backend)?;
 
-    let ui_ctx = ui::UiContext {
-        theme: &config.theme,
-    };
     let mut app = App::new(sessions, &config);
     let mut last_tick = Instant::now();
     refresh_preview_if_needed(&mut app);
 
     // Main loop
     loop {
+        let theme = config.theme.clone();
+        let ui_ctx = ui::UiContext { theme: &theme };
         terminal.draw(|f| ui::draw(f, &app, &ui_ctx))?;
 
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            input::handle_key(&mut app, key);
-            // After every input, drain any pending tmux mutations.
-            if let Some(target) = app.take_pending_kill() {
-                let _ = tmux::kill_session(&target);
+        if event::poll(timeout)? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    input::handle_key(&mut app, key);
+                    if let Some(target) = app.take_pending_kill() {
+                        let _ = tmux::kill_session(&target);
+                    }
+                    if let Some((old, new)) = app.take_pending_rename()
+                        && let Err(e) = tmux::rename_session(&old, &new)
+                    {
+                        app.set_flash(format!("rename failed: {e}"));
+                    }
+                }
+                Event::Mouse(m) => {
+                    if matches!(app.mode, Mode::Pick | Mode::Filter)
+                        && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                        && let Some(row) = ui::row_for_y(m.row)
+                    {
+                        app.handle_mouse_click(row, Instant::now());
+                    }
+                }
+                _ => {}
             }
-            if let Some((old, new)) = app.take_pending_rename()
-                && let Err(e) = tmux::rename_session(&old, &new)
-            {
-                app.set_flash(format!("rename failed: {e}"));
+        }
+
+        if reload_flag.swap(false, Ordering::SeqCst) {
+            let (new_cfg, warnings) = Config::load_with_warnings();
+            app.timeout_secs = new_cfg.timeout_secs;
+            config = new_cfg;
+            tmux::populate_markers(&mut app.sessions, &config.markers);
+            app.preview = None;
+            app.preview_for = None;
+            app.preview_windows = None;
+            if warnings.is_empty() {
+                app.set_flash("[config reloaded]".into());
+            } else {
+                app.set_flash(format!(
+                    "[config reloaded with {} warning(s)]",
+                    warnings.len()
+                ));
+                for w in &warnings {
+                    eprintln!("tmux-picker config: {w}");
+                }
             }
         }
 

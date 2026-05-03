@@ -14,11 +14,20 @@ stdout and execs tmux (or drops to a shell if the user picked `s`).
 - Label-aware display: shows `label (session-name)` when a label is set, plus
   a project-path / purpose detail line under the selected session.
 - Preview pane: last 6 lines of the highlighted session's active pane.
-- Live filter (`/`): case-insensitive substring match on session name, label,
-  and project path. `Enter` keeps the filter active, `Esc` clears it.
+- Live fuzzy filter (`/`): subsequence match on session name, label, and
+  project; matches are ordered by score so the closest hit floats to the top.
+  `Enter` keeps the filter active, `Esc` clears it.
 - Kill session (`K`) with a `y`/`Y` confirmation prompt; any other key cancels.
+- Quick ops: rename (`r`), sort cycle (`o`), yank session name to clipboard (`y`).
+- Process markers (🤖 claude, ✏️ vim/nvim, 📊 htop, 🦀 cargo, 📦 node/npm,
+  🐍 python, 🌿 git) and a coloured activity dot for at-a-glance status.
+- `Tab` toggles between the 6-line preview and a multi-window summary
+  showing each window's last non-blank line.
+- Mouse: click to select, double-click to attach.
+- `SIGHUP` reloads `~/.config/tmux-picker/config.toml` in place — change a
+  theme colour or marker map without restarting the picker.
 - Optional user config at `~/.config/tmux-picker/config.toml` for the auto-attach
-  timeout and theme colors.
+  timeout, theme colors, and process markers.
 
 ## Build / Install
 
@@ -129,8 +138,32 @@ selection_bg = "darkgray"  # highlighted row background
 Recognized color names (case-insensitive): `black`, `red`, `green`, `yellow`,
 `blue`, `magenta`, `cyan`, `white`, `darkgray` (aliases: `gray`, `grey`),
 `lightred`, `lightgreen`, `lightyellow`, `lightblue`, `lightmagenta`,
-`lightcyan`. Unknown names log a warning to stderr and keep that field's
-default.
+`lightcyan`. Hex (`"#rrggbb"` or `"#rgb"`) and 256-colour indexes (`"196"`
+or `196`) are also accepted. Unknown values log a warning to stderr and
+keep that field's default.
+
+`tmux-picker --check-config` prints the parse warnings plus the effective
+config so you can debug overrides without launching the picker.
+
+### Process markers
+
+Override or extend the built-in glyph table:
+
+```toml
+[markers]
+# Drop the built-ins entirely; only your patterns apply.
+disable_defaults = false
+
+[markers.patterns]
+foo = "★"     # any pane running a command containing "foo" gets ★
+"my-tool" = "🚀"
+```
+
+Built-in defaults: `claude → 🤖`, `vim`/`nvim → ✏️`, `htop`/`btop`/`top → 📊`,
+`cargo`/`rustc → 🦀`, `npm`/`pnpm`/`node → 📦`, `python → 🐍`, `git → 🌿`.
+
+Send `SIGHUP` to a running picker (`kill -HUP $(pgrep tmux-picker)`) to
+re-read the config without restarting.
 
 ## Test
 
