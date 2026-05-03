@@ -186,6 +186,44 @@ pub fn session_exists(name: &str) -> bool {
     run_tmux(&["has-session", "-t", name]).is_ok()
 }
 
+/// Set a tmux user-option on a session.
+/// `key` must NOT include the `@` prefix; it is added here.
+pub fn set_user_option(session: &str, key: &str, value: &str) -> Result<(), String> {
+    let opt = format!("@{key}");
+    run_tmux(&["set-option", "-t", session, &opt, value]).map(|_| ())
+}
+
+/// Unset a tmux user-option on a session.
+pub fn unset_user_option(session: &str, key: &str) -> Result<(), String> {
+    let opt = format!("@{key}");
+    run_tmux(&["set-option", "-t", session, "-u", &opt]).map(|_| ())
+}
+
+/// Return the value of a tmux user-option, or None if unset.
+pub fn get_user_option(session: &str, key: &str) -> Option<String> {
+    let opt = format!("@{key}");
+    let out = run_tmux(&["show-options", "-t", session, "-v", &opt]).ok()?;
+    let trimmed = out.trim_end_matches('\n').to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Get the current pane working directory for a session.
+/// Uses the session's active window's active pane.
+pub fn pane_current_path(session: &str) -> Result<String, String> {
+    let out = run_tmux(&[
+        "display-message",
+        "-t",
+        session,
+        "-p",
+        "#{pane_current_path}",
+    ])?;
+    Ok(out.trim_end_matches('\n').to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
