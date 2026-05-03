@@ -328,9 +328,12 @@ fn test_label_then_show_round_trip() {
     create_default_socket_session(&sess);
 
     let out = run_binary(&[
-        "label", &sess,
-        "--label", "Refactoring auth",
-        "--purpose", "PR #234",
+        "label",
+        &sess,
+        "--label",
+        "Refactoring auth",
+        "--purpose",
+        "PR #234",
     ]);
     assert!(
         out.status.success(),
@@ -345,7 +348,10 @@ fn test_label_then_show_round_trip() {
         String::from_utf8_lossy(&show.stderr)
     );
     let toml = String::from_utf8_lossy(&show.stdout);
-    assert!(toml.contains(&format!("session = \"{sess}\"")), "got: {toml}");
+    assert!(
+        toml.contains(&format!("session = \"{sess}\"")),
+        "got: {toml}"
+    );
     assert!(toml.contains("label = \"Refactoring auth\""), "got: {toml}");
     assert!(toml.contains("purpose = \"PR #234\""), "got: {toml}");
     assert!(toml.contains("label_at = "), "got: {toml}");
@@ -366,7 +372,10 @@ fn test_label_clear_removes_metadata() {
 
     let show = run_binary(&["show", &sess]);
     let toml = String::from_utf8_lossy(&show.stdout);
-    assert!(toml.contains(&format!("session = \"{sess}\"")), "got: {toml}");
+    assert!(
+        toml.contains(&format!("session = \"{sess}\"")),
+        "got: {toml}"
+    );
     assert!(!toml.contains("label ="), "got: {toml}");
     assert!(!toml.contains("project ="), "got: {toml}");
     assert!(!toml.contains("purpose ="), "got: {toml}");
@@ -393,8 +402,10 @@ fn test_label_rejects_pipe_in_value() {
 #[test]
 fn test_label_rejects_unknown_session() {
     let out = run_binary(&[
-        "label", "nonexistent-tmuxpicker-test-session-xyz",
-        "--label", "x",
+        "label",
+        "nonexistent-tmuxpicker-test-session-xyz",
+        "--label",
+        "x",
     ]);
     assert!(!out.status.success());
 }

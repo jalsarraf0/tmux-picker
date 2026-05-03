@@ -138,11 +138,7 @@ pub fn auto_detect(session: &str) -> Result<(), String> {
         && tmux::get_user_option(session, "tmux_picker_purpose").is_none()
         && let Some(branch) = git_current_branch(&project)
     {
-        tmux::set_user_option(
-            session,
-            "tmux_picker_purpose",
-            &format!("branch:{branch}"),
-        )?;
+        tmux::set_user_option(session, "tmux_picker_purpose", &format!("branch:{branch}"))?;
     }
 
     let now = std::time::SystemTime::now()

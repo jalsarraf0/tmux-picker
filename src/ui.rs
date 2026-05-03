@@ -231,6 +231,35 @@ fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------------
+// Help bar
+// ---------------------------------------------------------------------------
+
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let line = match app.mode {
+        Mode::Pick => {
+            let secs = app.timeout_remaining.as_secs();
+            Line::from(vec![Span::styled(
+                format!(
+                    "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  s shell  \u{00b7}  q quit  \u{00b7}  auto-attach in {secs}s"
+                ),
+                Style::default().fg(Color::DarkGray),
+            )])
+        }
+        Mode::NewInput => Line::from(vec![Span::styled(
+            "  enter confirm  \u{00b7}  esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )]),
+    };
+
+    let para = Paragraph::new(line).block(block);
+    frame.render_widget(para, area);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -323,33 +352,4 @@ mod tests {
         };
         assert!(format_detail_line(&s).is_none());
     }
-}
-
-// ---------------------------------------------------------------------------
-// Help bar
-// ---------------------------------------------------------------------------
-
-fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let line = match app.mode {
-        Mode::Pick => {
-            let secs = app.timeout_remaining.as_secs();
-            Line::from(vec![Span::styled(
-                format!(
-                    "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  s shell  \u{00b7}  q quit  \u{00b7}  auto-attach in {secs}s"
-                ),
-                Style::default().fg(Color::DarkGray),
-            )])
-        }
-        Mode::NewInput => Line::from(vec![Span::styled(
-            "  enter confirm  \u{00b7}  esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )]),
-    };
-
-    let para = Paragraph::new(line).block(block);
-    frame.render_widget(para, area);
 }
