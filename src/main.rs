@@ -1,11 +1,14 @@
+use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use std::io::stderr;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tmux_picker::action::Action;
 use tmux_picker::app::App;
-use tmux_picker::{input, tmux, ui};
+use tmux_picker::cli::{Cli, Command};
+use tmux_picker::{input, metadata, tmux, ui};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
 
@@ -19,8 +22,28 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn main() {
-    let action = match run() {
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match cli.command {
+        None => run_picker(),
+        Some(Command::Label {
+            session,
+            label,
+            project,
+            purpose,
+            clear,
+        }) => run_label(&session, label, project, purpose, clear),
+        Some(Command::Show { session }) => run_show(&session),
+        Some(Command::Auto { session }) => run_auto(&session),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Picker (existing TUI behavior)
+// ---------------------------------------------------------------------------
+
+fn run_picker() -> ExitCode {
+    let action = match picker_loop() {
         Ok(action) => action,
         Err(e) => {
             eprintln!("tmux-picker error: {e}");
@@ -28,9 +51,10 @@ fn main() {
         }
     };
     println!("{action}");
+    ExitCode::SUCCESS
 }
 
-fn run() -> Result<Action, Box<dyn std::error::Error>> {
+fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     // Query tmux — single call, no TOCTOU race
     let sessions = match tmux::list_sessions() {
         Ok(s) if s.is_empty() => return Ok(Action::New("main".into())),
@@ -73,4 +97,88 @@ fn run() -> Result<Action, Box<dyn std::error::Error>> {
 
     // _guard Drop handles terminal cleanup
     Ok(app.action.unwrap_or(Action::Shell))
+}
+
+// ---------------------------------------------------------------------------
+// label / show / auto
+// ---------------------------------------------------------------------------
+
+fn run_label(
+    session: &str,
+    label: Option<String>,
+    project: Option<String>,
+    purpose: Option<String>,
+    clear: bool,
+) -> ExitCode {
+    if clear {
+        return match metadata::clear(session) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tmux-picker label: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    if label.is_none() && project.is_none() && purpose.is_none() {
+        eprintln!(
+            "tmux-picker label: no fields to set; \
+             pass --label, --project, --purpose, or --clear"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    for (name, val) in [
+        ("--label", &label),
+        ("--project", &project),
+        ("--purpose", &purpose),
+    ] {
+        if let Some(v) = val {
+            if v.is_empty() {
+                eprintln!("tmux-picker label: {name} value must not be empty");
+                return ExitCode::FAILURE;
+            }
+            if v.contains('|') {
+                eprintln!("tmux-picker label: {name} value must not contain '|'");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let m = metadata::Metadata {
+        label,
+        project,
+        purpose,
+        label_at: None,
+    };
+    match metadata::write(session, &m) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("tmux-picker label: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_show(session: &str) -> ExitCode {
+    match metadata::read(session) {
+        Ok(m) => {
+            print!("{}", m.to_toml(session));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("tmux-picker show: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_auto(session: &str) -> ExitCode {
+    match metadata::auto_detect(session) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("tmux-picker auto: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
