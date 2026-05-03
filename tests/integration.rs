@@ -411,6 +411,53 @@ fn test_label_rejects_unknown_session() {
 }
 
 #[test]
+fn test_rename_session_round_trip() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let old = format!("{IT_PREFIX}rename-old");
+    let new = format!("{IT_PREFIX}rename-new");
+    create_default_socket_session(&old);
+
+    tmux_picker::tmux::rename_session(&old, &new).expect("rename should succeed");
+
+    let has_old = Command::new(TMUX)
+        .args(["has-session", "-t", &old])
+        .status()
+        .expect("has-session");
+    let has_new = Command::new(TMUX)
+        .args(["has-session", "-t", &new])
+        .status()
+        .expect("has-session");
+    assert!(!has_old.success(), "old name should be gone after rename");
+    assert!(has_new.success(), "new name should exist after rename");
+
+    let _ = Command::new(TMUX)
+        .args(["kill-session", "-t", &new])
+        .status();
+    cleanup_it_sessions();
+}
+
+#[test]
+fn test_rename_to_existing_name_fails() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let a = format!("{IT_PREFIX}rename-a");
+    let b = format!("{IT_PREFIX}rename-b");
+    create_default_socket_session(&a);
+    create_default_socket_session(&b);
+
+    let result = tmux_picker::tmux::rename_session(&a, &b);
+    assert!(
+        result.is_err(),
+        "tmux should refuse to rename onto an existing session"
+    );
+
+    cleanup_it_sessions();
+}
+
+#[test]
 fn test_kill_session_removes_it() {
     let _lock = serial_lock();
     cleanup_it_sessions();

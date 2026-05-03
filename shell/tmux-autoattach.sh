@@ -74,7 +74,13 @@ case "$action" in
         ;;
     new:*)
         sess="${action#new:}"
-        "$_TMUX" new-session -As "$sess" 2>/dev/null || _tmux_fallback "$sess"
+        if "$_TMUX" new-session -As "$sess" 2>/dev/null; then
+            # Best-effort auto-label so the new session shows up with a
+            # meaningful project / label / branch on the next picker run.
+            "$_PICKER" auto "$sess" 2>/dev/null || true
+        else
+            _tmux_fallback "$sess"
+        fi
         ;;
     shell)
         command -v fastfetch &>/dev/null && fastfetch

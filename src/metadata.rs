@@ -117,12 +117,21 @@ pub fn clear(session: &str) -> Result<(), String> {
 
 /// Auto-detect project + label from session's active pane cwd.
 /// Never overwrites a manually-set label or purpose.
+///
+/// Search order for the project root:
+///   1. Walk up from the pane cwd until a `.git` directory exists.
+///   2. If that fails (pane sits above any repo, e.g. `$HOME` at SSH login),
+///      try `~/git/<session-name>` so the user gets a useful label when
+///      they create a new session named after a project.
+///   3. Otherwise fall back to the pane cwd itself.
 pub fn auto_detect(session: &str) -> Result<(), String> {
     if !tmux::session_exists(session) {
         return Err(format!("session '{session}' does not exist"));
     }
     let cwd = tmux::pane_current_path(session)?;
-    let project = walk_up_to_git_root(&cwd).unwrap_or(cwd);
+    let project = walk_up_to_git_root(&cwd)
+        .or_else(|| project_for_session_name(session))
+        .unwrap_or(cwd);
 
     tmux::set_user_option(session, "tmux_picker_project", &project)?;
 
@@ -161,6 +170,28 @@ pub fn walk_up_to_git_root(start: &str) -> Option<String> {
         if !cur.pop() {
             return None;
         }
+    }
+}
+
+/// `~/git/<name>` if that directory exists, else None.
+///
+/// Used as an `auto_detect` fallback when the pane cwd has no nearby
+/// `.git`. tmux-picker assumes the user keeps repos under `~/git/` per the
+/// project's own filesystem-containment convention.
+fn project_for_session_name(name: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    project_for_session_name_under(name, &home)
+}
+
+fn project_for_session_name_under(name: &str, home: &str) -> Option<String> {
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    let candidate = std::path::PathBuf::from(home).join("git").join(name);
+    if candidate.is_dir() {
+        candidate.to_str().map(String::from)
+    } else {
+        None
     }
 }
 
@@ -243,5 +274,45 @@ mod tests {
         // Don't assert specific result (some systems may have /.git);
         // assert termination without panic.
         let _ = walk_up_to_git_root("/tmp");
+    }
+
+    fn unique_tempdir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "tmux-picker-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn project_for_session_name_finds_existing_dir() {
+        let tmp = unique_tempdir("pj");
+        let git_dir = tmp.join("git").join("acme");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let got = project_for_session_name_under("acme", tmp.to_str().unwrap());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(got.as_deref(), git_dir.to_str());
+    }
+
+    #[test]
+    fn project_for_session_name_returns_none_when_missing() {
+        let tmp = unique_tempdir("pj-missing");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let got = project_for_session_name_under("does-not-exist", tmp.to_str().unwrap());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn project_for_session_name_rejects_slash() {
+        assert!(project_for_session_name_under("a/b", "/tmp").is_none());
+        assert!(project_for_session_name_under("", "/tmp").is_none());
     }
 }

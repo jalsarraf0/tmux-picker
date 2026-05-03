@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::action::Action;
+use crate::clipboard;
 use crate::config::Config;
 use crate::session::{Session, validate_session_name};
 use crate::tmux;
@@ -16,7 +17,53 @@ pub enum Mode {
     Filter,
     ConfirmKill,
     Help,
+    Rename,
 }
+
+// ---------------------------------------------------------------------------
+// Sort mode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SortMode {
+    /// Whatever order tmux returned. The default — no re-sort happens
+    /// until the user presses `o`.
+    Default,
+    /// Most recently active first (smallest `last_activity` first).
+    LastActivity,
+    /// Attached sessions on top, then alphabetical within each group.
+    AttachedFirst,
+    /// Case-insensitive alphabetical.
+    Name,
+    /// Longest-idle first (largest `last_activity` first).
+    IdleLongest,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Default => "tmux order",
+            SortMode::LastActivity => "by recent activity",
+            SortMode::AttachedFirst => "attached first",
+            SortMode::Name => "by name",
+            SortMode::IdleLongest => "idle longest first",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::Default => SortMode::LastActivity,
+            SortMode::LastActivity => SortMode::AttachedFirst,
+            SortMode::AttachedFirst => SortMode::Name,
+            SortMode::Name => SortMode::IdleLongest,
+            SortMode::IdleLongest => SortMode::Default,
+        }
+    }
+}
+
+/// Window for sort-flash and yank-flash messages. Long enough to read,
+/// short enough that the regular footer comes back quickly.
+pub const FLASH_DURATION: Duration = Duration::from_secs(3);
 
 // ---------------------------------------------------------------------------
 // App
@@ -48,12 +95,25 @@ pub struct App {
     pub pending_kill: Option<String>,
     /// Auto-attach timeout in seconds. 0 disables auto-attach.
     pub timeout_secs: u64,
+    /// Active sort mode. `cycle_sort` rotates this; the default is
+    /// `LastActivity` so recent work surfaces.
+    pub sort_mode: SortMode,
+    /// Original session name when entering Rename mode. Restored to the
+    /// input buffer so the user can edit rather than retype.
+    pub rename_target: Option<String>,
+    /// Set by `confirm_rename` as `(old, new)` for the picker loop to
+    /// consume via `take_pending_rename`.
+    pub pending_rename: Option<(String, String)>,
+    /// Transient footer message (e.g. "yanked" or "[sort: by name]") that
+    /// expires `FLASH_DURATION` after `flash_remaining` is set.
+    pub flash: Option<String>,
+    pub flash_remaining: Duration,
 }
 
 impl App {
     pub fn new(sessions: Vec<Session>, config: &Config) -> Self {
         let filtered_indices = (0..sessions.len()).collect();
-        App {
+        let mut app = App {
             sessions,
             selected: 0,
             mode: Mode::Pick,
@@ -69,7 +129,15 @@ impl App {
             kill_target: None,
             pending_kill: None,
             timeout_secs: config.timeout_secs,
-        }
+            sort_mode: SortMode::Default,
+            rename_target: None,
+            pending_rename: None,
+            flash: None,
+            flash_remaining: Duration::ZERO,
+        };
+        app.sort_sessions();
+        app.recompute_filter();
+        app
     }
 
     /// Returns the index into `sessions` for the currently-selected row in
@@ -94,6 +162,7 @@ impl App {
     pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
         let prev_name = self.selected_name().map(String::from);
         self.sessions = sessions;
+        self.sort_sessions();
         self.recompute_filter();
         if let Some(name) = prev_name {
             if let Some(pos) = self
@@ -111,6 +180,46 @@ impl App {
         self.sessions_dirty = false;
         self.preview = None;
         self.preview_for = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Sort
+    // -----------------------------------------------------------------------
+
+    /// Apply `self.sort_mode` to `self.sessions` in place. Stable so
+    /// equal-key sessions keep their tmux-reported order.
+    pub fn sort_sessions(&mut self) {
+        match self.sort_mode {
+            SortMode::Default => {}
+            SortMode::LastActivity => {
+                self.sessions.sort_by_key(|s| s.last_activity);
+            }
+            SortMode::AttachedFirst => {
+                self.sessions
+                    .sort_by_key(|s| (!s.attached, s.name.to_lowercase()));
+            }
+            SortMode::Name => {
+                self.sessions.sort_by_key(|s| s.name.to_lowercase());
+            }
+            SortMode::IdleLongest => {
+                self.sessions
+                    .sort_by_key(|s| std::cmp::Reverse(s.last_activity));
+            }
+        }
+    }
+
+    /// Rotate to the next sort mode, re-sort, and flash the new mode in
+    /// the footer. Selection is reset to the top so the highlight tracks
+    /// the visually-first match after re-ordering.
+    pub fn cycle_sort(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+        self.sort_sessions();
+        self.recompute_filter();
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+        self.set_flash(format!("[sort: {}]", self.sort_mode.label()));
+        self.reset_timeout();
     }
 
     /// Recompute `filtered_indices` based on `filter`. Empty filter = all.
@@ -270,8 +379,14 @@ impl App {
 
     /// Subtract elapsed from the remaining timeout. If timeout reaches zero
     /// and we are in Pick mode, call auto_select. `timeout_secs == 0` disables
-    /// auto-attach entirely.
+    /// auto-attach entirely. Also expires any active footer flash.
     pub fn tick(&mut self, elapsed: Duration) {
+        if self.flash.is_some() {
+            self.flash_remaining = self.flash_remaining.saturating_sub(elapsed);
+            if self.flash_remaining.is_zero() {
+                self.flash = None;
+            }
+        }
         if self.mode != Mode::Pick || self.timeout_secs == 0 {
             return;
         }
@@ -279,6 +394,12 @@ impl App {
         if self.timeout_remaining.is_zero() {
             self.auto_select();
         }
+    }
+
+    /// Set or replace the transient footer flash.
+    pub fn set_flash(&mut self, msg: String) {
+        self.flash = Some(msg);
+        self.flash_remaining = FLASH_DURATION;
     }
 
     // -----------------------------------------------------------------------
@@ -413,6 +534,88 @@ impl App {
     pub fn cancel_help(&mut self) {
         self.mode = Mode::Pick;
         self.reset_timeout();
+    }
+
+    // -----------------------------------------------------------------------
+    // Rename
+    // -----------------------------------------------------------------------
+
+    /// Open Rename mode for the highlighted session. Pre-fills the input
+    /// buffer with the current name so the user can edit instead of
+    /// retype. No-op if the filtered list is empty.
+    pub fn enter_rename(&mut self) {
+        let Some(name) = self.selected_name().map(String::from) else {
+            return;
+        };
+        self.input.clear();
+        self.input.push_str(&name);
+        self.rename_target = Some(name);
+        self.input_error = None;
+        self.mode = Mode::Rename;
+        self.reset_timeout();
+    }
+
+    pub fn cancel_rename(&mut self) {
+        self.rename_target = None;
+        self.input.clear();
+        self.input_error = None;
+        self.mode = Mode::Pick;
+        self.reset_timeout();
+    }
+
+    /// Validate the buffered name and stage a rename for the picker loop
+    /// to execute. No-op when the name is unchanged. Sets `input_error`
+    /// when the name fails validation.
+    pub fn confirm_rename(&mut self) {
+        let Some(old) = self.rename_target.clone() else {
+            self.cancel_rename();
+            return;
+        };
+        let trimmed = self.input.trim();
+        if trimmed.is_empty() || trimmed == old {
+            self.cancel_rename();
+            return;
+        }
+        match validate_session_name(trimmed) {
+            None => {
+                self.input_error = Some(format!("'{trimmed}' is not a valid session name"));
+            }
+            Some(new) => {
+                self.pending_rename = Some((old, new));
+                self.rename_target = None;
+                self.input.clear();
+                self.input_error = None;
+                self.mode = Mode::Pick;
+            }
+        }
+    }
+
+    /// Picker loop calls this each iteration. If a rename is pending,
+    /// returns `(old, new)` and clears the slot. The loop runs the tmux
+    /// command and marks `sessions_dirty` so the list refreshes.
+    pub fn take_pending_rename(&mut self) -> Option<(String, String)> {
+        let pair = self.pending_rename.take();
+        if pair.is_some() {
+            self.sessions_dirty = true;
+        }
+        pair
+    }
+
+    // -----------------------------------------------------------------------
+    // Yank
+    // -----------------------------------------------------------------------
+
+    /// Copy the selected session's name to the system clipboard via the
+    /// adapter in `crate::clipboard`. Result reported in the footer flash.
+    pub fn yank_selected(&mut self) {
+        let Some(name) = self.selected_name().map(String::from) else {
+            self.set_flash("(no session to yank)".into());
+            return;
+        };
+        match clipboard::copy(&name) {
+            Ok(tool) => self.set_flash(format!("yanked '{name}' via {tool}")),
+            Err(e) => self.set_flash(format!("yank failed: {e}")),
+        }
     }
 }
 
@@ -990,5 +1193,192 @@ mod tests {
         app.cancel_help();
         assert_eq!(app.mode, Mode::Pick);
         assert_eq!(app.timeout_remaining, Duration::from_secs(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // Sort
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_sort_preserves_tmux_order() {
+        let app = App::new(make_sessions(), &Config::default());
+        assert_eq!(app.sort_mode, SortMode::Default);
+        assert_eq!(app.sessions[0].name, "main");
+        assert_eq!(app.sessions[1].name, "claude-aihelp");
+        assert_eq!(app.sessions[2].name, "work");
+    }
+
+    #[test]
+    fn cycle_sort_advances_through_every_mode() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        let expected = [
+            SortMode::LastActivity,
+            SortMode::AttachedFirst,
+            SortMode::Name,
+            SortMode::IdleLongest,
+            SortMode::Default,
+        ];
+        for want in expected {
+            app.cycle_sort();
+            assert_eq!(app.sort_mode, want);
+        }
+    }
+
+    #[test]
+    fn sort_last_activity_puts_most_recent_first() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.cycle_sort(); // Default -> LastActivity
+        assert_eq!(app.sessions[0].name, "claude-aihelp");
+        assert_eq!(app.sessions[1].name, "main");
+        assert_eq!(app.sessions[2].name, "work");
+    }
+
+    #[test]
+    fn sort_attached_first_puts_attached_on_top() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.sort_mode = SortMode::AttachedFirst;
+        app.sort_sessions();
+        assert!(app.sessions[0].attached);
+        // The remaining detached sessions sort alphabetically.
+        assert_eq!(app.sessions[1].name, "main");
+        assert_eq!(app.sessions[2].name, "work");
+    }
+
+    #[test]
+    fn sort_by_name_is_case_insensitive_alpha() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.sort_mode = SortMode::Name;
+        app.sort_sessions();
+        let names: Vec<&str> = app.sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["claude-aihelp", "main", "work"]);
+    }
+
+    #[test]
+    fn sort_idle_longest_puts_longest_idle_first() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.sort_mode = SortMode::IdleLongest;
+        app.sort_sessions();
+        assert_eq!(app.sessions[0].name, "work"); // 500s
+        assert_eq!(app.sessions[2].name, "claude-aihelp"); // 10s
+    }
+
+    #[test]
+    fn cycle_sort_flashes_the_new_label() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.cycle_sort();
+        let flash = app.flash.as_ref().expect("flash set on cycle");
+        assert!(flash.contains("recent activity"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Rename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enter_rename_prefills_input_with_current_name() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        assert_eq!(app.mode, Mode::Rename);
+        assert_eq!(app.input, "main");
+        assert_eq!(app.rename_target.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn cancel_rename_returns_to_pick_and_clears_state() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        app.input.push('x');
+        app.cancel_rename();
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.input.is_empty());
+        assert!(app.rename_target.is_none());
+    }
+
+    #[test]
+    fn confirm_rename_with_unchanged_name_is_noop() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        // input == "main" already
+        app.confirm_rename();
+        assert!(app.pending_rename.is_none());
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn confirm_rename_with_empty_name_is_noop() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        app.input.clear();
+        app.confirm_rename();
+        assert!(app.pending_rename.is_none());
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn confirm_rename_with_invalid_name_keeps_mode_and_sets_error() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        // `validate_session_name` is a sanitiser; it returns None only when
+        // the input collapses to empty after trimming. A single slash does.
+        app.input.clear();
+        app.input.push('/');
+        app.confirm_rename();
+        assert_eq!(app.mode, Mode::Rename);
+        assert!(app.input_error.is_some());
+        assert!(app.pending_rename.is_none());
+    }
+
+    #[test]
+    fn confirm_rename_with_valid_new_name_pushes_pending() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        app.input.clear();
+        app.input.push_str("renamed");
+        app.confirm_rename();
+        assert_eq!(
+            app.pending_rename,
+            Some(("main".to_string(), "renamed".to_string()))
+        );
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn take_pending_rename_marks_sessions_dirty() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_rename();
+        app.input.clear();
+        app.input.push_str("renamed");
+        app.confirm_rename();
+        let pair = app.take_pending_rename();
+        assert_eq!(pair, Some(("main".to_string(), "renamed".to_string())));
+        assert!(app.sessions_dirty);
+    }
+
+    // -----------------------------------------------------------------------
+    // Yank + flash
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn yank_with_no_session_flashes_message() {
+        let mut app = App::new(vec![], &Config::default());
+        app.yank_selected();
+        assert!(app.flash.as_deref().unwrap().contains("no session"));
+    }
+
+    #[test]
+    fn flash_expires_after_tick_window() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.set_flash("hello".into());
+        assert!(app.flash.is_some());
+        app.tick(FLASH_DURATION);
+        assert!(app.flash.is_none());
+    }
+
+    #[test]
+    fn flash_persists_within_window() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.set_flash("hello".into());
+        app.tick(Duration::from_millis(500));
+        assert!(app.flash.is_some());
     }
 }

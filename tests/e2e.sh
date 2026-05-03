@@ -171,6 +171,28 @@ else
     fail "--check-config hex" "exit=$rc; got: $out"
 fi
 
+# --- Test 13: auto-label falls back to ~/git/<sessname> ---
+echo "Test 13: auto picks ~/git/<sess> when pane cwd has no repo"
+SESS="e2e-stub-$$"
+STUB_HOME="$(mktemp -d)"
+mkdir -p "$STUB_HOME/git/$SESS"
+# Spawn the session with -c so its pane cwd sits at $STUB_HOME (no .git
+# anywhere up the tree). The fallback then resolves to $STUB_HOME/git/<sess>.
+if /usr/bin/tmux new-session -d -s "$SESS" -c "$STUB_HOME" 2>/dev/null; then
+    HOME="$STUB_HOME" "$BINARY" auto "$SESS" >/dev/null 2>&1
+    out=$(HOME="$STUB_HOME" "$BINARY" show "$SESS" 2>/dev/null)
+    /usr/bin/tmux kill-session -t "$SESS" 2>/dev/null || true
+    if grep -q "project = \"$STUB_HOME/git/$SESS\"" <<<"$out" \
+        && grep -q "label = \"$SESS\"" <<<"$out"; then
+        pass "auto-label uses ~/git fallback"
+    else
+        fail "auto-label fallback" "got: $out"
+    fi
+else
+    fail "auto-label fallback setup" "could not create session"
+fi
+rm -rf "$STUB_HOME"
+
 echo ""
 echo "═══ Results: $PASS passed, $FAIL failed ═══"
 [[ $FAIL -eq 0 ]] || exit 1

@@ -320,6 +320,32 @@ fn draw_actions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
             "  help — press esc, ?, or q to close",
             Style::default().fg(Color::DarkGray),
         )]),
+        Mode::Rename => {
+            if let Some(ref err) = app.input_error {
+                Line::from(vec![
+                    Span::raw("  rename: "),
+                    Span::styled(
+                        app.input.clone(),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                    Span::raw("  ("),
+                    Span::styled(err.clone(), Style::default().fg(Color::Red)),
+                    Span::raw(")"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw("  rename: "),
+                    Span::styled(
+                        format!("{}\u{2588}", app.input),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ])
+            }
+        }
     };
 
     let para = Paragraph::new(line).block(block);
@@ -335,37 +361,48 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    let line = match app.mode {
-        Mode::Pick => {
-            let secs = app.timeout_remaining.as_secs();
-            let countdown = if app.timeout_secs == 0 {
-                String::from("auto-attach off")
-            } else {
-                format!("auto-attach in {secs}s")
-            };
-            Line::from(vec![Span::styled(
-                format!(
-                    "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  ? help  \u{00b7}  q quit  \u{00b7}  {countdown}"
-                ),
+    let line = if let Some(ref msg) = app.flash {
+        Line::from(vec![Span::styled(
+            format!("  {msg}"),
+            Style::default().fg(Color::DarkGray),
+        )])
+    } else {
+        match app.mode {
+            Mode::Pick => {
+                let secs = app.timeout_remaining.as_secs();
+                let countdown = if app.timeout_secs == 0 {
+                    String::from("auto-attach off")
+                } else {
+                    format!("auto-attach in {secs}s")
+                };
+                Line::from(vec![Span::styled(
+                    format!(
+                        "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  r rename  \u{00b7}  o sort  \u{00b7}  y yank  \u{00b7}  ? help  \u{00b7}  {countdown}"
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                )])
+            }
+            Mode::NewInput => Line::from(vec![Span::styled(
+                "  enter confirm  \u{00b7}  esc cancel",
                 Style::default().fg(Color::DarkGray),
-            )])
+            )]),
+            Mode::Filter => Line::from(vec![Span::styled(
+                "  type to filter  \u{00b7}  \u{2191}\u{2193} navigate  \u{00b7}  enter attach  \u{00b7}  esc cancel",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Mode::ConfirmKill => Line::from(vec![Span::styled(
+                "  y to kill  \u{00b7}  any other key cancels",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Mode::Help => Line::from(vec![Span::styled(
+                "  esc / ? / q to close",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Mode::Rename => Line::from(vec![Span::styled(
+                "  enter confirm  \u{00b7}  esc cancel",
+                Style::default().fg(Color::DarkGray),
+            )]),
         }
-        Mode::NewInput => Line::from(vec![Span::styled(
-            "  enter confirm  \u{00b7}  esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Mode::Filter => Line::from(vec![Span::styled(
-            "  type to filter  \u{00b7}  \u{2191}\u{2193} navigate  \u{00b7}  enter attach  \u{00b7}  esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Mode::ConfirmKill => Line::from(vec![Span::styled(
-            "  y to kill  \u{00b7}  any other key cancels",
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Mode::Help => Line::from(vec![Span::styled(
-            "  esc / ? / q to close",
-            Style::default().fg(Color::DarkGray),
-        )]),
     };
 
     let para = Paragraph::new(line).block(block);

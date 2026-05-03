@@ -112,9 +112,14 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
             && key.kind == KeyEventKind::Press
         {
             input::handle_key(&mut app, key);
-            // After every input, see if the user confirmed a kill.
+            // After every input, drain any pending tmux mutations.
             if let Some(target) = app.take_pending_kill() {
                 let _ = tmux::kill_session(&target);
+            }
+            if let Some((old, new)) = app.take_pending_rename()
+                && let Err(e) = tmux::rename_session(&old, &new)
+            {
+                app.set_flash(format!("rename failed: {e}"));
             }
         }
 

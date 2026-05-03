@@ -217,6 +217,12 @@ pub fn kill_session(name: &str) -> Result<(), String> {
     run_tmux(&["kill-session", "-t", name]).map(|_| ())
 }
 
+/// Rename a tmux session. tmux refuses if `new` is already in use, so the
+/// returned error is propagated up to the picker for the user to see.
+pub fn rename_session(old: &str, new: &str) -> Result<(), String> {
+    run_tmux(&["rename-session", "-t", old, new]).map(|_| ())
+}
+
 /// Set a tmux user-option on a session.
 /// `key` must NOT include the `@` prefix; it is added here.
 pub fn set_user_option(session: &str, key: &str, value: &str) -> Result<(), String> {

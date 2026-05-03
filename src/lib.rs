@@ -1,6 +1,7 @@
 pub mod action;
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod input;
 pub mod metadata;

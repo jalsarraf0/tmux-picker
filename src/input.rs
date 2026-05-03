@@ -10,6 +10,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         Mode::Filter => handle_filter_key(app, key),
         Mode::ConfirmKill => handle_confirm_kill_key(app, key),
         Mode::Help => handle_help_key(app, key),
+        Mode::Rename => handle_rename_key(app, key),
     }
 }
 
@@ -37,6 +38,9 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
         // Power ops
         KeyCode::Char('/') => app.enter_filter_mode(),
         KeyCode::Char('K') => app.enter_kill_confirm(),
+        KeyCode::Char('r') => app.enter_rename(),
+        KeyCode::Char('o') => app.cycle_sort(),
+        KeyCode::Char('y') => app.yank_selected(),
 
         // Help overlay
         KeyCode::Char('?') => app.enter_help(),
@@ -58,6 +62,19 @@ pub fn handle_help_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_help(),
         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => app.cancel_help(),
+        _ => {}
+    }
+}
+
+/// Key handler for Rename mode. Mirrors `handle_input_key` but routes
+/// confirm to `confirm_rename`.
+pub fn handle_rename_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_rename(),
+        KeyCode::Enter => app.confirm_rename(),
+        KeyCode::Esc => app.cancel_rename(),
+        KeyCode::Backspace => app.input_backspace(),
+        KeyCode::Char(c) => app.input_char(c),
         _ => {}
     }
 }
@@ -427,5 +444,73 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Char('j')));
         handle_key(&mut app, key(KeyCode::Down));
         assert_eq!(app.mode, Mode::Help);
+    }
+
+    // -----------------------------------------------------------------------
+    // Quick ops dispatch (phase 6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn r_enters_rename_mode() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(app.mode, Mode::Rename);
+        assert_eq!(app.input, "main");
+    }
+
+    #[test]
+    fn o_advances_sort_mode_and_flashes() {
+        use crate::app::SortMode;
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('o')));
+        assert_eq!(app.sort_mode, SortMode::LastActivity);
+        assert!(app.flash.is_some());
+    }
+
+    #[test]
+    fn y_triggers_yank_and_sets_flash() {
+        let mut app = make_app();
+        // No clipboard tool likely available in CI — accept either an
+        // "ok" flash or a "no clipboard" flash, but it must be set.
+        handle_key(&mut app, key(KeyCode::Char('y')));
+        assert!(app.flash.is_some());
+    }
+
+    #[test]
+    fn rename_typing_appends() {
+        let mut app = make_app();
+        app.enter_rename();
+        // input starts as "main"; backspace then type
+        for _ in 0..4 {
+            handle_key(&mut app, key(KeyCode::Backspace));
+        }
+        for c in "renamed".chars() {
+            handle_key(&mut app, key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.input, "renamed");
+    }
+
+    #[test]
+    fn rename_enter_confirms() {
+        let mut app = make_app();
+        app.enter_rename();
+        for _ in 0..4 {
+            handle_key(&mut app, key(KeyCode::Backspace));
+        }
+        for c in "renamed".chars() {
+            handle_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.pending_rename.is_some());
+    }
+
+    #[test]
+    fn rename_esc_cancels() {
+        let mut app = make_app();
+        app.enter_rename();
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Pick);
+        assert!(app.pending_rename.is_none());
     }
 }
