@@ -12,6 +12,10 @@
 //
 // Each test calls setup() to kill any leftover server and teardown() to
 // clean up afterwards.
+//
+// Subcommand tests (label/show/auto) hit the default tmux socket because
+// the binary does not yet accept a socket flag. They create unique session
+// names (prefixed `tmuxpicker-it-`) and clean up after themselves.
 
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
@@ -58,6 +62,56 @@ fn teardown() {
 fn create_session(name: &str) {
     tmux_cmd(&["new-session", "-d", "-s", name]);
     thread::sleep(Duration::from_millis(100));
+}
+
+fn binary() -> std::path::PathBuf {
+    let mut p = std::env::current_exe().expect("current_exe");
+    // exe is target/<profile>/deps/integration-<hash> — pop twice to reach target/<profile>/
+    p.pop();
+    if p.ends_with("deps") {
+        p.pop();
+    }
+    p.push("tmux-picker");
+    p
+}
+
+fn run_binary(args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .output()
+        .expect("failed to run tmux-picker binary")
+}
+
+const IT_PREFIX: &str = "tmuxpicker-it-";
+
+fn cleanup_it_sessions() {
+    let out = Command::new(TMUX)
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output();
+    if let Ok(out) = out {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            if line.starts_with(IT_PREFIX) {
+                let _ = Command::new(TMUX)
+                    .args(["kill-session", "-t", line])
+                    .output();
+            }
+        }
+    }
+}
+
+fn create_default_socket_session(name: &str) {
+    let _ = Command::new(TMUX)
+        .args(["new-session", "-d", "-s", name])
+        .output();
+    thread::sleep(Duration::from_millis(50));
+}
+
+fn create_default_socket_session_in(name: &str, cwd: &str) {
+    let _ = Command::new(TMUX)
+        .args(["new-session", "-d", "-s", name, "-c", cwd])
+        .output();
+    thread::sleep(Duration::from_millis(50));
 }
 
 // ---------------------------------------------------------------------------
@@ -259,4 +313,115 @@ fn test_no_server_running() {
         !output.status.success(),
         "expected list-sessions to fail when no server is running, but it succeeded"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand integration tests (default tmux socket)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_label_then_show_round_trip() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}label-show");
+    create_default_socket_session(&sess);
+
+    let out = run_binary(&[
+        "label", &sess,
+        "--label", "Refactoring auth",
+        "--purpose", "PR #234",
+    ]);
+    assert!(
+        out.status.success(),
+        "label failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let show = run_binary(&["show", &sess]);
+    assert!(
+        show.status.success(),
+        "show failed: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let toml = String::from_utf8_lossy(&show.stdout);
+    assert!(toml.contains(&format!("session = \"{sess}\"")), "got: {toml}");
+    assert!(toml.contains("label = \"Refactoring auth\""), "got: {toml}");
+    assert!(toml.contains("purpose = \"PR #234\""), "got: {toml}");
+    assert!(toml.contains("label_at = "), "got: {toml}");
+
+    cleanup_it_sessions();
+}
+
+#[test]
+fn test_label_clear_removes_metadata() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}clear");
+    create_default_socket_session(&sess);
+
+    let _ = run_binary(&["label", &sess, "--label", "x"]);
+    let _ = run_binary(&["label", &sess, "--clear"]);
+
+    let show = run_binary(&["show", &sess]);
+    let toml = String::from_utf8_lossy(&show.stdout);
+    assert!(toml.contains(&format!("session = \"{sess}\"")), "got: {toml}");
+    assert!(!toml.contains("label ="), "got: {toml}");
+    assert!(!toml.contains("project ="), "got: {toml}");
+    assert!(!toml.contains("purpose ="), "got: {toml}");
+
+    cleanup_it_sessions();
+}
+
+#[test]
+fn test_label_rejects_pipe_in_value() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}reject-pipe");
+    create_default_socket_session(&sess);
+
+    let out = run_binary(&["label", &sess, "--label", "a|b"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("must not contain '|'"), "got: {stderr}");
+
+    cleanup_it_sessions();
+}
+
+#[test]
+fn test_label_rejects_unknown_session() {
+    let out = run_binary(&[
+        "label", "nonexistent-tmuxpicker-test-session-xyz",
+        "--label", "x",
+    ]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn test_auto_uses_pane_cwd() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+
+    let sess = format!("{IT_PREFIX}auto");
+    let crate_root = env!("CARGO_MANIFEST_DIR");
+    create_default_socket_session_in(&sess, crate_root);
+
+    let out = run_binary(&["auto", &sess]);
+    assert!(
+        out.status.success(),
+        "auto failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let show = run_binary(&["show", &sess]);
+    let toml = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        toml.contains(&format!("project = \"{crate_root}\"")),
+        "got: {toml}"
+    );
+    assert!(toml.contains("label = \"tmux-picker\""), "got: {toml}");
+
+    cleanup_it_sessions();
 }
