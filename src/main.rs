@@ -1,17 +1,11 @@
-mod action;
-mod app;
-mod input;
-mod session;
-mod tmux;
-mod ui;
-
-use action::Action;
-use app::App;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use std::io::stderr;
 use std::time::{Duration, Instant};
+use tmux_picker::action::Action;
+use tmux_picker::app::App;
+use tmux_picker::{input, tmux, ui};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
 
