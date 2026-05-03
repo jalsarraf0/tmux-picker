@@ -7,3 +7,4 @@ description = "TUI session picker for tmux on SSH login"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
+clap = { version = "4", features = ["derive"] }
