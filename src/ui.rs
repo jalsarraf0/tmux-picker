@@ -8,6 +8,13 @@ use ratatui::{
 
 use crate::app::{App, Mode};
 
+fn format_name_display(session: &crate::session::Session) -> String {
+    match session.metadata.as_ref().and_then(|m| m.label.as_deref()) {
+        Some(label) => format!("{label} ({})", session.name),
+        None => session.name.clone(),
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -91,7 +98,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 
             Row::new(vec![
                 Span::raw(selector),
-                Span::styled(session.name.clone(), name_style),
+                Span::styled(format_name_display(session), name_style),
                 Span::raw(windows),
                 Span::styled(
                     session.current_command.clone(),
@@ -106,7 +113,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 
     let widths = [
         Constraint::Length(6),
-        Constraint::Length(18),
+        Constraint::Length(36),
         Constraint::Length(6),
         Constraint::Length(12),
         Constraint::Length(3),
@@ -174,6 +181,51 @@ fn draw_actions(frame: &mut Frame, app: &App, area: Rect) {
 
     let para = Paragraph::new(line).block(block);
     frame.render_widget(para, area);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::Metadata;
+    use crate::session::Session;
+    use std::time::Duration;
+
+    fn make_session(name: &str, label: Option<&str>) -> Session {
+        Session {
+            name: name.into(),
+            window_count: 1,
+            attached: false,
+            current_command: "bash".into(),
+            last_activity: Duration::from_secs(0),
+            metadata: label.map(|l| Metadata {
+                label: Some(l.into()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn format_name_with_label() {
+        let s = make_session("claude-app", Some("Refactoring auth"));
+        assert_eq!(format_name_display(&s), "Refactoring auth (claude-app)");
+    }
+
+    #[test]
+    fn format_name_without_label() {
+        let s = make_session("main", None);
+        assert_eq!(format_name_display(&s), "main");
+    }
+
+    #[test]
+    fn format_name_with_empty_metadata_no_label() {
+        let mut s = make_session("main", None);
+        s.metadata = Some(Metadata::default());
+        assert_eq!(format_name_display(&s), "main");
+    }
 }
 
 // ---------------------------------------------------------------------------
