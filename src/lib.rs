@@ -1,5 +1,6 @@
 pub mod action;
 pub mod app;
+pub mod cli;
 pub mod input;
 pub mod metadata;
 pub mod session;
