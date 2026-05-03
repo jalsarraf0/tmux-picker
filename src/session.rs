@@ -1,9 +1,11 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
+use ratatui::style::Color;
+
 use crate::metadata::Metadata;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct Session {
     pub name: String,
     pub window_count: u32,
@@ -11,6 +13,9 @@ pub struct Session {
     pub current_command: String,
     pub last_activity: Duration,
     pub metadata: Option<Metadata>,
+    /// Glyph next to the session name when one of its panes is running a
+    /// recognised process (claude, vim, …). None when no pane matched.
+    pub marker: Option<String>,
 }
 
 impl Session {
@@ -41,6 +46,22 @@ impl Session {
     /// Returns a human-readable window count string.
     pub fn windows_display(&self) -> String {
         format!("{} win", self.window_count)
+    }
+
+    /// Activity dot for the row's leftmost activity column. Stale sessions
+    /// get a blank space (their gray "idle Nh" text already conveys staleness).
+    pub fn activity_dot(&self) -> (char, Color) {
+        if self.is_stale() {
+            return (' ', Color::DarkGray);
+        }
+        let secs = self.last_activity.as_secs();
+        if secs < 60 {
+            ('\u{2022}', Color::Green)
+        } else if secs < 300 {
+            ('\u{2022}', Color::Yellow)
+        } else {
+            ('\u{2022}', Color::DarkGray)
+        }
     }
 }
 
@@ -127,6 +148,7 @@ mod tests {
             current_command: String::new(),
             last_activity: Duration::from_secs(secs),
             metadata: None,
+            marker: None,
         }
     }
 
@@ -403,6 +425,7 @@ mod tests {
             current_command: String::new(),
             last_activity: Duration::from_secs(0),
             metadata: None,
+            marker: None,
         };
         assert_eq!(s.windows_display(), "1 win");
     }
@@ -416,7 +439,39 @@ mod tests {
             current_command: String::new(),
             last_activity: Duration::from_secs(0),
             metadata: None,
+            marker: None,
         };
         assert_eq!(s.windows_display(), "5 win");
+    }
+
+    // -----------------------------------------------------------------------
+    // activity_dot
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn activity_dot_green_for_recent() {
+        let (c, color) = make("s", false, 30).activity_dot();
+        assert_eq!(c, '\u{2022}');
+        assert_eq!(color, Color::Green);
+    }
+
+    #[test]
+    fn activity_dot_yellow_under_5min() {
+        let (c, color) = make("s", false, 200).activity_dot();
+        assert_eq!(c, '\u{2022}');
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn activity_dot_gray_over_5min_under_stale() {
+        let (c, color) = make("s", false, 600).activity_dot();
+        assert_eq!(c, '\u{2022}');
+        assert_eq!(color, Color::DarkGray);
+    }
+
+    #[test]
+    fn activity_dot_blank_for_stale() {
+        let (c, _) = make("s", false, 7200).activity_dot();
+        assert_eq!(c, ' ');
     }
 }

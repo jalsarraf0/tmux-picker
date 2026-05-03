@@ -65,6 +65,23 @@ impl SortMode {
 /// short enough that the regular footer comes back quickly.
 pub const FLASH_DURATION: Duration = Duration::from_secs(3);
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PreviewMode {
+    /// Last 6 lines of the highlighted session's active pane.
+    Summary,
+    /// One row per window, each with the active pane's last non-blank line.
+    WindowsList,
+}
+
+impl PreviewMode {
+    pub fn next(self) -> Self {
+        match self {
+            PreviewMode::Summary => PreviewMode::WindowsList,
+            PreviewMode::WindowsList => PreviewMode::Summary,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -108,6 +125,11 @@ pub struct App {
     /// expires `FLASH_DURATION` after `flash_remaining` is set.
     pub flash: Option<String>,
     pub flash_remaining: Duration,
+    /// Active preview style. `Tab` rotates between Summary and WindowsList.
+    pub preview_mode: PreviewMode,
+    /// Cached multi-window snapshot for `WindowsList`. Refilled by the
+    /// picker loop when the cache is stale or empty.
+    pub preview_windows: Option<Vec<crate::tmux::WindowSnapshot>>,
 }
 
 impl App {
@@ -134,6 +156,8 @@ impl App {
             pending_rename: None,
             flash: None,
             flash_remaining: Duration::ZERO,
+            preview_mode: PreviewMode::Summary,
+            preview_windows: None,
         };
         app.sort_sessions();
         app.recompute_filter();
@@ -617,6 +641,20 @@ impl App {
             Err(e) => self.set_flash(format!("yank failed: {e}")),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Preview mode
+    // -----------------------------------------------------------------------
+
+    /// Rotate to the next preview mode and clear any cached payload so the
+    /// picker loop fetches fresh data on its next pass.
+    pub fn cycle_preview_mode(&mut self) {
+        self.preview_mode = self.preview_mode.next();
+        self.preview = None;
+        self.preview_for = None;
+        self.preview_windows = None;
+        self.reset_timeout();
+    }
 }
 
 /// Case-insensitive substring match of `needle` against the session's
@@ -657,6 +695,7 @@ mod tests {
                 current_command: "bash".into(),
                 last_activity: Duration::from_secs(100),
                 metadata: None,
+                marker: None,
             },
             Session {
                 name: "claude-aihelp".into(),
@@ -665,6 +704,7 @@ mod tests {
                 current_command: "claude".into(),
                 last_activity: Duration::from_secs(10),
                 metadata: None,
+                marker: None,
             },
             Session {
                 name: "work".into(),
@@ -673,6 +713,7 @@ mod tests {
                 current_command: "vim".into(),
                 last_activity: Duration::from_secs(500),
                 metadata: None,
+                marker: None,
             },
         ]
     }
@@ -1107,6 +1148,7 @@ mod tests {
                 current_command: "bash".into(),
                 last_activity: Duration::from_secs(0),
                 metadata: None,
+                marker: None,
             },
             Session {
                 name: "claude-aihelp".into(),
@@ -1115,6 +1157,7 @@ mod tests {
                 current_command: "claude".into(),
                 last_activity: Duration::from_secs(10),
                 metadata: None,
+                marker: None,
             },
         ];
         app.replace_sessions(new);
@@ -1132,6 +1175,7 @@ mod tests {
             current_command: "bash".into(),
             last_activity: Duration::from_secs(0),
             metadata: None,
+            marker: None,
         }];
         app.replace_sessions(new);
         assert_eq!(app.selected, 0);
@@ -1380,5 +1424,34 @@ mod tests {
         app.set_flash("hello".into());
         app.tick(Duration::from_millis(500));
         assert!(app.flash.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Preview mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn preview_mode_default_is_summary() {
+        let app = App::new(make_sessions(), &Config::default());
+        assert_eq!(app.preview_mode, PreviewMode::Summary);
+    }
+
+    #[test]
+    fn cycle_preview_mode_rotates() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.cycle_preview_mode();
+        assert_eq!(app.preview_mode, PreviewMode::WindowsList);
+        app.cycle_preview_mode();
+        assert_eq!(app.preview_mode, PreviewMode::Summary);
+    }
+
+    #[test]
+    fn cycle_preview_mode_clears_caches() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.set_preview(Some("hello".into()));
+        app.preview_windows = Some(Vec::new());
+        app.cycle_preview_mode();
+        assert!(app.preview.is_none());
+        assert!(app.preview_windows.is_none());
     }
 }

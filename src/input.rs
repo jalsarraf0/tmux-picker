@@ -45,6 +45,9 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
         // Help overlay
         KeyCode::Char('?') => app.enter_help(),
 
+        // Preview mode toggle
+        KeyCode::Tab => app.cycle_preview_mode(),
+
         // 1-indexed digit selection
         KeyCode::Char(c) if c.is_ascii_digit() => {
             let digit = c as usize - '0' as usize;
@@ -148,6 +151,7 @@ mod tests {
                     current_command: "bash".into(),
                     last_activity: Duration::from_secs(0),
                     metadata: None,
+                    marker: None,
                 },
                 Session {
                     name: "work".into(),
@@ -156,6 +160,7 @@ mod tests {
                     current_command: "vim".into(),
                     last_activity: Duration::from_secs(100),
                     metadata: None,
+                    marker: None,
                 },
             ],
             &Config::default(),
@@ -512,5 +517,14 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Pick);
         assert!(app.pending_rename.is_none());
+    }
+
+    #[test]
+    fn tab_cycles_preview_mode() {
+        use crate::app::PreviewMode;
+        let mut app = make_app();
+        assert_eq!(app.preview_mode, PreviewMode::Summary);
+        handle_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.preview_mode, PreviewMode::WindowsList);
     }
 }

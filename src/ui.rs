@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, PreviewMode};
 use crate::config::Theme;
 
 /// Render-time context: theme, future render-only flags. Borrowed so the UI
@@ -16,9 +16,14 @@ pub struct UiContext<'a> {
 }
 
 fn format_name_display(session: &crate::session::Session) -> String {
-    match session.metadata.as_ref().and_then(|m| m.label.as_deref()) {
+    let base = match session.metadata.as_ref().and_then(|m| m.label.as_deref()) {
         Some(label) => format!("{label} ({})", session.name),
         None => session.name.clone(),
+    };
+    match session.marker.as_deref() {
+        Some(glyph) => format!("{glyph} {base}"),
+        // Pad with two spaces so unmarked rows align with marked rows.
+        None => format!("  {base}"),
     }
 }
 
@@ -88,8 +93,15 @@ pub fn draw(frame: &mut Frame, app: &App, ctx: &UiContext<'_>) {
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
+    match app.preview_mode {
+        PreviewMode::Summary => draw_preview_summary(frame, app, area),
+        PreviewMode::WindowsList => draw_preview_windows(frame, app, area),
+    }
+}
+
+fn draw_preview_summary(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(" preview ")
+        .title(" preview (Tab: windows) ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
     let body = match app.preview.as_deref() {
@@ -101,6 +113,55 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(Color::DarkGray))
         .block(block);
     frame.render_widget(para, area);
+}
+
+fn draw_preview_windows(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" windows (Tab: preview) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let lines: Vec<Line> = match app.preview_windows.as_deref() {
+        Some(snaps) if !snaps.is_empty() => snaps
+            .iter()
+            .map(|s| {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {:<14}", truncate(&s.name, 14)),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" \u{203A} ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        truncate(&s.last_line, area.width.saturating_sub(20) as usize),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            })
+            .collect(),
+        Some(_) => vec![Line::from(Span::styled(
+            "(no windows)",
+            Style::default().fg(Color::DarkGray),
+        ))],
+        None => vec![Line::from(Span::styled(
+            "(unavailable)",
+            Style::default().fg(Color::DarkGray),
+        ))],
+    };
+    let para = Paragraph::new(lines).block(block);
+    frame.render_widget(para, area);
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
@@ -183,6 +244,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
                 Style::default()
             };
 
+            let (dot_char, dot_color) = session.activity_dot();
             Some(
                 Row::new(vec![
                     Span::raw(selector),
@@ -193,6 +255,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::styled(attached, Style::default().fg(Color::Green)),
+                    Span::styled(dot_char.to_string(), Style::default().fg(dot_color)),
                     Span::styled(session.activity_display(), activity_style),
                 ])
                 .style(row_style),
@@ -202,10 +265,11 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
 
     let widths = [
         Constraint::Length(6),
-        Constraint::Length(36),
+        Constraint::Length(38),
         Constraint::Length(6),
         Constraint::Length(12),
         Constraint::Length(3),
+        Constraint::Length(2),
         Constraint::Length(12),
     ];
 
@@ -453,6 +517,10 @@ fn help_overlay_lines(ctx: &UiContext<'_>) -> Vec<String> {
         String::from("    K            kill highlighted session"),
         String::from("    s            drop to shell"),
         String::from("    q / esc      drop to shell"),
+        String::from("    r            rename selected session"),
+        String::from("    o            cycle sort modes"),
+        String::from("    y            yank session name to clipboard"),
+        String::from("    Tab          toggle preview / windows view"),
         String::from("    ?            show this help"),
         String::new(),
         String::from("  Filter mode"),
@@ -512,26 +580,38 @@ mod tests {
                 label: Some(l.into()),
                 ..Default::default()
             }),
+            marker: None,
         }
     }
 
     #[test]
     fn format_name_with_label() {
         let s = make_session("claude-app", Some("Refactoring auth"));
-        assert_eq!(format_name_display(&s), "Refactoring auth (claude-app)");
+        // Two-space marker pad keeps unmarked rows aligned with marked rows.
+        assert_eq!(format_name_display(&s), "  Refactoring auth (claude-app)");
     }
 
     #[test]
     fn format_name_without_label() {
         let s = make_session("main", None);
-        assert_eq!(format_name_display(&s), "main");
+        assert_eq!(format_name_display(&s), "  main");
     }
 
     #[test]
     fn format_name_with_empty_metadata_no_label() {
         let mut s = make_session("main", None);
         s.metadata = Some(Metadata::default());
-        assert_eq!(format_name_display(&s), "main");
+        assert_eq!(format_name_display(&s), "  main");
+    }
+
+    #[test]
+    fn format_name_with_marker_renders_glyph() {
+        let mut s = make_session("claude-app", Some("Refactoring auth"));
+        s.marker = Some("\u{1F916}".into());
+        assert_eq!(
+            format_name_display(&s),
+            "\u{1F916} Refactoring auth (claude-app)"
+        );
     }
 
     #[test]
@@ -546,6 +626,7 @@ mod tests {
                 project: Some("/home/u/git/app".into()),
                 ..Default::default()
             }),
+            marker: None,
         };
         // SAFETY: tests may run in parallel. Best-effort assertion that prefix
         // logic works at all.
@@ -567,6 +648,7 @@ mod tests {
                 purpose: Some("PR #234".into()),
                 ..Default::default()
             }),
+            marker: None,
         };
         assert_eq!(format_detail_line(&s).unwrap(), "\u{21B3} PR #234");
     }
@@ -580,6 +662,7 @@ mod tests {
             current_command: "bash".into(),
             last_activity: Duration::from_secs(0),
             metadata: None,
+            marker: None,
         };
         assert!(format_detail_line(&s).is_none());
     }

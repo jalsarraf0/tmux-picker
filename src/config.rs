@@ -11,6 +11,79 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 pub struct Config {
     pub timeout_secs: u64,
     pub theme: Theme,
+    pub markers: Markers,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Markers {
+    /// When true, the built-in default marker map (claude → 🤖, vim → ✏️ …)
+    /// is dropped — only user-supplied patterns apply.
+    pub disable_defaults: bool,
+    /// Ordered (pattern, glyph) pairs. Pattern is matched
+    /// case-insensitively as a substring against `pane_current_command`.
+    /// Insertion order = match order; user overrides are pushed after
+    /// defaults so they win when a key collides.
+    pub patterns: Vec<(String, String)>,
+}
+
+/// Built-in markers shipped with the picker. Order matters: the first
+/// matching glyph wins, so put more-specific patterns first.
+pub const DEFAULT_MARKERS: &[(&str, &str)] = &[
+    ("claude", "\u{1F916}"),      // 🤖
+    ("nvim", "\u{270F}\u{FE0F}"), // ✏️
+    ("vim", "\u{270F}\u{FE0F}"),  // ✏️
+    ("htop", "\u{1F4CA}"),        // 📊
+    ("btop", "\u{1F4CA}"),        // 📊
+    ("top", "\u{1F4CA}"),         // 📊
+    ("cargo", "\u{1F980}"),       // 🦀
+    ("rustc", "\u{1F980}"),       // 🦀
+    ("npm", "\u{1F4E6}"),         // 📦
+    ("pnpm", "\u{1F4E6}"),        // 📦
+    ("node", "\u{1F4E6}"),        // 📦
+    ("python", "\u{1F40D}"),      // 🐍
+    ("git", "\u{1F33F}"),         // 🌿
+];
+
+impl Markers {
+    /// Walk the merged map in match order. Returns `(pattern, glyph)` for
+    /// the first entry whose pattern is a case-insensitive substring of
+    /// any element in `commands`.
+    pub fn lookup(&self, commands: &[String]) -> Option<String> {
+        let lc: Vec<String> = commands.iter().map(|c| c.to_lowercase()).collect();
+        let defaults: &[(&str, &str)] = if self.disable_defaults {
+            &[]
+        } else {
+            DEFAULT_MARKERS
+        };
+        // User patterns first so they take precedence on identical keys.
+        for (pat, glyph) in self.patterns.iter().map(|(p, g)| (p.as_str(), g.as_str())) {
+            if pattern_matches(&lc, pat) {
+                return Some(glyph.to_string());
+            }
+        }
+        for (pat, glyph) in defaults {
+            // Skip a default whose key is overridden by a user pattern with
+            // the same key — we already checked user patterns above, but
+            // user may have set a *different* key whose pattern overlaps;
+            // that's fine, defaults still apply for non-collisions.
+            if self
+                .patterns
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case(pat))
+            {
+                continue;
+            }
+            if pattern_matches(&lc, pat) {
+                return Some((*glyph).to_string());
+            }
+        }
+        None
+    }
+}
+
+fn pattern_matches(commands_lc: &[String], pattern: &str) -> bool {
+    let pat_lc = pattern.to_lowercase();
+    commands_lc.iter().any(|c| c.contains(&pat_lc))
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +108,7 @@ impl Default for Config {
         Config {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             theme: Theme::default(),
+            markers: Markers::default(),
         }
     }
 }
@@ -124,6 +198,43 @@ impl Config {
                     );
                 }
                 None => warnings.push("theme must be a table; using defaults".into()),
+            }
+        }
+
+        if let Some(markers_val) = table.get("markers") {
+            match markers_val.as_table() {
+                Some(markers_table) => {
+                    if let Some(v) = markers_table.get("disable_defaults") {
+                        match v.as_bool() {
+                            Some(b) => cfg.markers.disable_defaults = b,
+                            None => warnings.push(
+                                "markers.disable_defaults must be a boolean; using default".into(),
+                            ),
+                        }
+                    }
+                    if let Some(v) = markers_table.get("patterns") {
+                        match v.as_table() {
+                            Some(patterns_table) => {
+                                for (k, v) in patterns_table {
+                                    match v.as_str() {
+                                        Some(glyph) => {
+                                            cfg.markers
+                                                .patterns
+                                                .push((k.to_string(), glyph.to_string()));
+                                        }
+                                        None => warnings.push(format!(
+                                            "markers.patterns.{k} must be a string; ignored"
+                                        )),
+                                    }
+                                }
+                            }
+                            None => {
+                                warnings.push("markers.patterns must be a table; ignored".into())
+                            }
+                        }
+                    }
+                }
+                None => warnings.push("markers must be a table; using defaults".into()),
             }
         }
 
@@ -432,5 +543,83 @@ mod tests {
         cfg.theme.accent = Color::Indexed(42);
         let s = cfg.to_toml();
         assert!(s.contains("accent = 42"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Markers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn markers_default_matches_claude() {
+        let m = Markers::default();
+        let cmds = vec!["bash".to_string(), "claude".to_string()];
+        assert!(m.lookup(&cmds).is_some());
+    }
+
+    #[test]
+    fn markers_default_does_not_match_bash() {
+        let m = Markers::default();
+        let cmds = vec!["bash".to_string()];
+        assert!(m.lookup(&cmds).is_none());
+    }
+
+    #[test]
+    fn markers_first_match_wins_user_overrides_default() {
+        let mut m = Markers::default();
+        m.patterns.push(("claude".into(), "C".into()));
+        let cmds = vec!["claude".to_string()];
+        assert_eq!(m.lookup(&cmds).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn markers_disable_defaults_drops_builtins() {
+        let m = Markers {
+            disable_defaults: true,
+            patterns: Vec::new(),
+        };
+        let cmds = vec!["claude".to_string()];
+        assert!(m.lookup(&cmds).is_none());
+    }
+
+    #[test]
+    fn markers_pattern_is_case_insensitive() {
+        let mut m = Markers {
+            disable_defaults: true,
+            patterns: Vec::new(),
+        };
+        m.patterns.push(("FOO".into(), "★".into()));
+        let cmds = vec!["foobar".to_string()];
+        assert_eq!(m.lookup(&cmds).as_deref(), Some("★"));
+    }
+
+    #[test]
+    fn config_parses_markers_disable_defaults() {
+        let cfg = Config::from_str("[markers]\ndisable_defaults = true");
+        assert!(cfg.markers.disable_defaults);
+    }
+
+    #[test]
+    fn config_parses_markers_patterns() {
+        let cfg = Config::from_str(
+            r#"
+            [markers.patterns]
+            foo = "★"
+            bar = "✦"
+            "#,
+        );
+        let pats = &cfg.markers.patterns;
+        assert!(pats.iter().any(|(k, v)| k == "foo" && v == "★"));
+        assert!(pats.iter().any(|(k, v)| k == "bar" && v == "✦"));
+    }
+
+    #[test]
+    fn config_warns_on_non_string_pattern_value() {
+        let (_, warnings) = Config::from_str_with_warnings(
+            r#"
+            [markers.patterns]
+            bad = 42
+            "#,
+        );
+        assert!(warnings.iter().any(|w| w.contains("markers.patterns.bad")));
     }
 }

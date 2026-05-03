@@ -98,6 +98,23 @@ pub fn parse_pane_commands(output: &str) -> HashMap<String, String> {
     map
 }
 
+/// Parse `list-panes -a` output into a map of session_name → every pane's
+/// current command (active and inactive). Used for marker matching so a
+/// session keeps its 🤖 even when the active pane is the bash next to it.
+pub fn parse_all_pane_commands(output: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.splitn(4, '|').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let session_name = parts[0].to_string();
+        let command = parts[3].to_string();
+        map.entry(session_name).or_default().push(command);
+    }
+    map
+}
+
 /// Parse one line of `list-sessions` output into a `Session`.
 ///
 /// Format (8 fields): `name|windows|attached|activity|label|project|purpose|label_at`
@@ -158,6 +175,7 @@ pub fn parse_session_line(
         current_command,
         last_activity,
         metadata,
+        marker: None,
     })
 }
 
@@ -205,6 +223,82 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
 
     sessions.sort();
     Ok(sessions)
+}
+
+/// Apply the configured marker map to every session by scanning all of its
+/// panes. Run after `list_sessions` from the picker loop so the integration
+/// tests (which only need plain session metadata) stay marker-agnostic.
+pub fn populate_markers(sessions: &mut [Session], markers: &crate::config::Markers) {
+    let pane_output = run_tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}|#{window_active}|#{pane_active}|#{pane_current_command}",
+    ])
+    .unwrap_or_default();
+    let all = parse_all_pane_commands(&pane_output);
+    for s in sessions {
+        if let Some(cmds) = all.get(&s.name) {
+            s.marker = markers.lookup(cmds);
+        }
+    }
+}
+
+/// Per-window snapshot for the multi-window preview mode.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WindowSnapshot {
+    pub name: String,
+    pub last_line: String,
+}
+
+/// List a session's windows along with the last non-blank line of each
+/// window's active pane. Caps at `max` entries; returns an extra entry
+/// `("…", "(N more)")` if windows exceed the cap.
+pub fn list_windows(session: &str, max: usize) -> Result<Vec<WindowSnapshot>, String> {
+    let raw = run_tmux(&[
+        "list-windows",
+        "-t",
+        session,
+        "-F",
+        "#{window_name}|#{window_active}|#{pane_id}",
+    ])?;
+    // Format: name|active|paneid (paneid of active pane in that window — tmux
+    // does not have a per-window "active pane id" format token, but every
+    // window has one active pane and `list-panes -t SESS:WIN -F …` would
+    // require another loop. Instead we use `display-message`-style format on
+    // the window itself which exposes #{pane_id} of the active pane.)
+    let entries: Vec<(String, String)> = raw
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '|').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            Some((parts[0].to_string(), parts[2].to_string()))
+        })
+        .collect();
+
+    let total = entries.len();
+    let mut out: Vec<WindowSnapshot> = Vec::new();
+    for (name, pane_id) in entries.into_iter().take(max) {
+        let captured =
+            run_tmux(&["capture-pane", "-p", "-t", &pane_id, "-S", "-3", "-J"]).unwrap_or_default();
+        let last_line = captured
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("(empty)")
+            .trim()
+            .to_string();
+        out.push(WindowSnapshot { name, last_line });
+    }
+    if total > max {
+        out.push(WindowSnapshot {
+            name: "…".into(),
+            last_line: format!("({} more)", total - max),
+        });
+    }
+    Ok(out)
 }
 
 /// Returns true if a tmux session with the given name exists.
