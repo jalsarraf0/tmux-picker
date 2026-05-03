@@ -15,6 +15,7 @@ pub enum Mode {
     NewInput,
     Filter,
     ConfirmKill,
+    Help,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,15 +118,27 @@ impl App {
         let f = self.filter.to_lowercase();
         if f.is_empty() {
             self.filtered_indices = (0..self.sessions.len()).collect();
-            return;
+        } else {
+            self.filtered_indices = self
+                .sessions
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| session_matches(s, &f))
+                .map(|(i, _)| i)
+                .collect();
         }
-        self.filtered_indices = self
-            .sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| session_matches(s, &f))
-            .map(|(i, _)| i)
-            .collect();
+        self.clamp_selected();
+    }
+
+    /// Snap `selected` into the current filtered range. Pulls a stale index
+    /// down when the visible list has shrunk, or to 0 when it is empty.
+    fn clamp_selected(&mut self) {
+        let max = self.filtered_indices.len();
+        if max == 0 {
+            self.selected = 0;
+        } else if self.selected >= max {
+            self.selected = max - 1;
+        }
     }
 
     /// True if the cached preview is for the currently-selected session.
@@ -380,6 +393,26 @@ impl App {
             self.sessions_dirty = true;
         }
         target
+    }
+
+    // -----------------------------------------------------------------------
+    // Help overlay
+    // -----------------------------------------------------------------------
+
+    /// Open the help overlay. Resets the auto-attach timeout so the user can
+    /// read without being kicked back to the picker, and clears the preview
+    /// cache because the overlay covers that area.
+    pub fn enter_help(&mut self) {
+        self.mode = Mode::Help;
+        self.preview = None;
+        self.preview_for = None;
+        self.reset_timeout();
+    }
+
+    /// Close the help overlay and return to picking.
+    pub fn cancel_help(&mut self) {
+        self.mode = Mode::Pick;
+        self.reset_timeout();
     }
 }
 
@@ -900,5 +933,62 @@ mod tests {
         app.replace_sessions(new);
         assert_eq!(app.selected, 0);
         assert_eq!(app.selected_name(), Some("main"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Selected clamp
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clamp_selected_pulls_index_into_range() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.selected = 99;
+        app.recompute_filter();
+        assert!(app.selected < app.filtered_indices.len());
+    }
+
+    #[test]
+    fn clamp_selected_zero_when_filter_empties_list() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.move_down();
+        app.move_down(); // selected = 2
+        app.enter_filter_mode();
+        for c in "zzzzz".chars() {
+            app.filter_char(c);
+        }
+        // Filter has no matches; selected is forced to 0.
+        assert_eq!(app.selected, 0);
+        assert!(app.filtered_indices.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Help mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enter_help_flips_mode_and_clears_preview() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.set_preview(Some("hello".into()));
+        app.enter_help();
+        assert_eq!(app.mode, Mode::Help);
+        assert!(app.preview.is_none());
+    }
+
+    #[test]
+    fn enter_help_resets_timeout() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.tick(Duration::from_secs(9));
+        app.enter_help();
+        assert_eq!(app.timeout_remaining, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn cancel_help_returns_to_pick_and_resets_timeout() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.enter_help();
+        app.tick(Duration::from_secs(5));
+        app.cancel_help();
+        assert_eq!(app.mode, Mode::Pick);
+        assert_eq!(app.timeout_remaining, Duration::from_secs(10));
     }
 }

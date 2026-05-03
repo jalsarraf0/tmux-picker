@@ -25,6 +25,9 @@ impl Drop for TerminalGuard {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.check_config {
+        return run_check_config();
+    }
     match cli.command {
         None => run_picker(),
         Some(Command::Label {
@@ -37,6 +40,24 @@ fn main() -> ExitCode {
         Some(Command::Show { session }) => run_show(&session),
         Some(Command::Auto { session }) => run_auto(&session),
     }
+}
+
+fn run_check_config() -> ExitCode {
+    let (cfg, warnings) = Config::load_with_warnings();
+    println!("# tmux-picker config check");
+    println!();
+    println!("# warnings");
+    if warnings.is_empty() {
+        println!("(none)");
+    } else {
+        for w in &warnings {
+            println!("{w}");
+        }
+    }
+    println!();
+    println!("# effective config");
+    print!("{}", cfg.to_toml());
+    ExitCode::SUCCESS
 }
 
 // ---------------------------------------------------------------------------

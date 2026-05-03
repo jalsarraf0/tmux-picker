@@ -9,6 +9,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         Mode::NewInput => handle_input_key(app, key),
         Mode::Filter => handle_filter_key(app, key),
         Mode::ConfirmKill => handle_confirm_kill_key(app, key),
+        Mode::Help => handle_help_key(app, key),
     }
 }
 
@@ -37,6 +38,9 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.enter_filter_mode(),
         KeyCode::Char('K') => app.enter_kill_confirm(),
 
+        // Help overlay
+        KeyCode::Char('?') => app.enter_help(),
+
         // 1-indexed digit selection
         KeyCode::Char(c) if c.is_ascii_digit() => {
             let digit = c as usize - '0' as usize;
@@ -44,6 +48,16 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
         }
 
         // Anything else is ignored.
+        _ => {}
+    }
+}
+
+/// Key handler for Help mode. `?`, `Esc`, or `q` closes the overlay; every
+/// other key is a no-op so the user can read in peace.
+pub fn handle_help_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_help(),
+        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => app.cancel_help(),
         _ => {}
     }
 }
@@ -361,5 +375,57 @@ mod tests {
         assert_eq!(app.mode, Mode::Pick);
         assert!(app.pending_kill.is_none());
         assert!(app.kill_target.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Help mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn question_mark_enters_help_mode() {
+        let mut app = make_app();
+        handle_key(&mut app, key(KeyCode::Char('?')));
+        assert_eq!(app.mode, Mode::Help);
+    }
+
+    #[test]
+    fn esc_closes_help() {
+        let mut app = make_app();
+        app.enter_help();
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn question_mark_closes_help() {
+        let mut app = make_app();
+        app.enter_help();
+        handle_key(&mut app, key(KeyCode::Char('?')));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn q_closes_help() {
+        let mut app = make_app();
+        app.enter_help();
+        handle_key(&mut app, key(KeyCode::Char('q')));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn ctrl_c_closes_help() {
+        let mut app = make_app();
+        app.enter_help();
+        handle_key(&mut app, ctrl('c'));
+        assert_eq!(app.mode, Mode::Pick);
+    }
+
+    #[test]
+    fn other_keys_in_help_are_noop() {
+        let mut app = make_app();
+        app.enter_help();
+        handle_key(&mut app, key(KeyCode::Char('j')));
+        handle_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.mode, Mode::Help);
     }
 }

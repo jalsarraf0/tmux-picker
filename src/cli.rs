@@ -10,6 +10,11 @@ use clap::{Parser, Subcommand};
                   stored as tmux user-options."
 )]
 pub struct Cli {
+    /// Print the effective config plus any parse warnings, then exit.
+    /// Useful when a user-side override is not taking effect.
+    #[arg(long, global = false)]
+    pub check_config: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

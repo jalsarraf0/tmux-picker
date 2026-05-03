@@ -123,6 +123,54 @@ else
 fi
 /usr/bin/tmux kill-session -t "$SESS" 2>/dev/null
 
+# --- Test 10: --check-config with no file ---
+echo "Test 10: --check-config with no config file"
+TMP_HOME="$(mktemp -d)"
+trap 'cleanup; rm -rf "$TMP_HOME"' EXIT
+out=$(HOME="$TMP_HOME" XDG_CONFIG_HOME="$TMP_HOME/.config" \
+    "$BINARY" --check-config 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q "(none)" <<<"$out" \
+    && grep -q "timeout_secs = 10" <<<"$out"; then
+    pass "--check-config no file"
+else
+    fail "--check-config no file" "exit=$rc; got: $out"
+fi
+
+# --- Test 11: --check-config flags an unknown color ---
+echo "Test 11: --check-config flags unknown color"
+mkdir -p "$TMP_HOME/.config/tmux-picker"
+cat >"$TMP_HOME/.config/tmux-picker/config.toml" <<'TOML'
+timeout_secs = 5
+[theme]
+accent = "chartreuse"
+TOML
+out=$(HOME="$TMP_HOME" XDG_CONFIG_HOME="$TMP_HOME/.config" \
+    "$BINARY" --check-config 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q "chartreuse" <<<"$out" \
+    && grep -q "timeout_secs = 5" <<<"$out"; then
+    pass "--check-config flags unknown color"
+else
+    fail "--check-config unknown color" "exit=$rc; got: $out"
+fi
+
+# --- Test 12: --check-config accepts a hex color ---
+echo "Test 12: --check-config round-trips a hex color"
+cat >"$TMP_HOME/.config/tmux-picker/config.toml" <<'TOML'
+[theme]
+accent = "#ff8800"
+TOML
+out=$(HOME="$TMP_HOME" XDG_CONFIG_HOME="$TMP_HOME/.config" \
+    "$BINARY" --check-config 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q '(none)' <<<"$out" \
+    && grep -q 'accent = "#ff8800"' <<<"$out"; then
+    pass "--check-config hex round-trip"
+else
+    fail "--check-config hex" "exit=$rc; got: $out"
+fi
+
 echo ""
 echo "═══ Results: $PASS passed, $FAIL failed ═══"
 [[ $FAIL -eq 0 ]] || exit 1

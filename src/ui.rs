@@ -51,8 +51,7 @@ pub fn draw(frame: &mut Frame, app: &App, ctx: &UiContext<'_>) {
     let area = frame.area();
 
     let detail_height: u16 = app
-        .sessions
-        .get(app.selected)
+        .selected_session()
         .and_then(format_detail_line)
         .map(|_| 1)
         .unwrap_or(0);
@@ -82,6 +81,10 @@ pub fn draw(frame: &mut Frame, app: &App, ctx: &UiContext<'_>) {
     }
     draw_actions(frame, app, ctx, chunks[3]);
     draw_help(frame, app, chunks[4]);
+
+    if app.mode == Mode::Help {
+        draw_help_overlay(frame, ctx, area);
+    }
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
@@ -101,7 +104,7 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(s) = app.sessions.get(app.selected)
+    if let Some(s) = app.selected_session()
         && let Some(line) = format_detail_line(s)
     {
         let para = Paragraph::new(Line::from(Span::styled(
@@ -131,17 +134,20 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
     }
 
     let rows: Vec<Row> = app
-        .sessions
+        .filtered_indices
         .iter()
         .enumerate()
-        .map(|(i, session)| {
-            let is_selected = i == app.selected;
+        .filter_map(|(visible_idx, &session_idx)| {
+            let session = app.sessions.get(session_idx)?;
+            let is_selected = visible_idx == app.selected;
 
-            // Column 1: selector + 1-indexed number (6 wide)
+            // Column 1: selector + 1-indexed number within the visible list
+            // (6 wide). Numbers are 1..=N over the filtered set so digit
+            // selection lines up with what the user sees.
             let selector = if is_selected {
-                format!(" \u{25b8} {}", i + 1)
+                format!(" \u{25b8} {}", visible_idx + 1)
             } else {
-                format!("   {}", i + 1)
+                format!("   {}", visible_idx + 1)
             };
 
             // Column 2: session name styling (18 wide)
@@ -177,18 +183,20 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
                 Style::default()
             };
 
-            Row::new(vec![
-                Span::raw(selector),
-                Span::styled(format_name_display(session), name_style),
-                Span::raw(windows),
-                Span::styled(
-                    session.current_command.clone(),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(attached, Style::default().fg(Color::Green)),
-                Span::styled(session.activity_display(), activity_style),
-            ])
-            .style(row_style)
+            Some(
+                Row::new(vec![
+                    Span::raw(selector),
+                    Span::styled(format_name_display(session), name_style),
+                    Span::raw(windows),
+                    Span::styled(
+                        session.current_command.clone(),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(attached, Style::default().fg(Color::Green)),
+                    Span::styled(session.activity_display(), activity_style),
+                ])
+                .style(row_style),
+            )
         })
         .collect();
 
@@ -219,27 +227,32 @@ fn draw_actions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
 
     let line = match app.mode {
         Mode::Pick => Line::from(vec![
-            Span::raw("    "),
+            Span::raw("  "),
             Span::styled(
                 "n",
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  new session     "),
+            Span::raw(" new   "),
             Span::styled(
                 "/",
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  filter     "),
+            Span::raw(" filter   "),
             Span::styled(
                 "K",
                 Style::default().fg(warning).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  kill     "),
+            Span::raw(" kill   "),
             Span::styled(
                 "s",
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  shell"),
+            Span::raw(" shell   "),
+            Span::styled(
+                "?",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" help"),
         ]),
         Mode::NewInput => {
             if let Some(ref err) = app.input_error {
@@ -303,6 +316,10 @@ fn draw_actions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
                 Span::raw(" cancel"),
             ])
         }
+        Mode::Help => Line::from(vec![Span::styled(
+            "  help — press esc, ?, or q to close",
+            Style::default().fg(Color::DarkGray),
+        )]),
     };
 
     let para = Paragraph::new(line).block(block);
@@ -321,9 +338,14 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let line = match app.mode {
         Mode::Pick => {
             let secs = app.timeout_remaining.as_secs();
+            let countdown = if app.timeout_secs == 0 {
+                String::from("auto-attach off")
+            } else {
+                format!("auto-attach in {secs}s")
+            };
             Line::from(vec![Span::styled(
                 format!(
-                    "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  s shell  \u{00b7}  q quit  \u{00b7}  auto-attach in {secs}s"
+                    "  \u{2191}\u{2193} navigate  \u{00b7}  enter/# select  \u{00b7}  ? help  \u{00b7}  q quit  \u{00b7}  {countdown}"
                 ),
                 Style::default().fg(Color::DarkGray),
             )])
@@ -340,10 +362,95 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             "  y to kill  \u{00b7}  any other key cancels",
             Style::default().fg(Color::DarkGray),
         )]),
+        Mode::Help => Line::from(vec![Span::styled(
+            "  esc / ? / q to close",
+            Style::default().fg(Color::DarkGray),
+        )]),
     };
 
     let para = Paragraph::new(line).block(block);
     frame.render_widget(para, area);
+}
+
+// ---------------------------------------------------------------------------
+// Help overlay
+// ---------------------------------------------------------------------------
+
+fn draw_help_overlay(frame: &mut Frame, ctx: &UiContext<'_>, area: Rect) {
+    let lines = help_overlay_lines(ctx);
+    let width = lines
+        .iter()
+        .map(|l| visible_width(l))
+        .max()
+        .unwrap_or(40)
+        .saturating_add(4) as u16;
+    let height = (lines.len() as u16).saturating_add(2);
+
+    let overlay = centered_rect(width, height, area);
+
+    // Clear what's underneath so the overlay is opaque.
+    frame.render_widget(ratatui::widgets::Clear, overlay);
+
+    let block = Block::default()
+        .title(" help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ctx.theme.accent));
+
+    let body: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    let para = Paragraph::new(body).block(block);
+    frame.render_widget(para, overlay);
+}
+
+fn help_overlay_lines(ctx: &UiContext<'_>) -> Vec<String> {
+    let _ = ctx;
+    // Plain strings — colourised inline rendering is overkill here. Each
+    // entry is "<keys>  <description>". Keep keys to <= 10 columns so the
+    // descriptions line up.
+    vec![
+        String::from("  Pick mode"),
+        String::from("    \u{2191} \u{2193} / j k    move selection"),
+        String::from("    1-9          jump to row N"),
+        String::from("    enter        attach to highlighted session"),
+        String::from("    n            new session"),
+        String::from("    /            filter sessions"),
+        String::from("    K            kill highlighted session"),
+        String::from("    s            drop to shell"),
+        String::from("    q / esc      drop to shell"),
+        String::from("    ?            show this help"),
+        String::new(),
+        String::from("  Filter mode"),
+        String::from("    type         narrow the visible list"),
+        String::from("    backspace    widen the list"),
+        String::from("    \u{2191} \u{2193}          navigate the matches"),
+        String::from("    enter        attach to highlighted match"),
+        String::from("    esc          clear filter and exit mode"),
+        String::new(),
+        String::from("  New session"),
+        String::from("    type         enter session name"),
+        String::from("    enter        create the session"),
+        String::from("    esc          cancel"),
+        String::new(),
+        String::from("  Kill confirm"),
+        String::from("    y / Y        kill the session"),
+        String::from("    any other    cancel"),
+    ]
+}
+
+fn visible_width(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,5 +545,95 @@ mod tests {
             metadata: None,
         };
         assert!(format_detail_line(&s).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Help overlay rendering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn help_overlay_lists_every_keybinding_section() {
+        let theme = crate::config::Theme::default();
+        let ctx = UiContext { theme: &theme };
+        let lines = help_overlay_lines(&ctx);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Pick mode"));
+        assert!(joined.contains("Filter mode"));
+        assert!(joined.contains("New session"));
+        assert!(joined.contains("Kill confirm"));
+    }
+
+    #[test]
+    fn help_overlay_mentions_the_question_mark_binding() {
+        let theme = crate::config::Theme::default();
+        let ctx = UiContext { theme: &theme };
+        let joined = help_overlay_lines(&ctx).join("\n");
+        assert!(joined.contains("?"));
+        assert!(joined.contains("show this help"));
+    }
+
+    #[test]
+    fn help_overlay_renders_through_test_backend() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = crate::config::Theme::default();
+        let ctx = UiContext { theme: &theme };
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_help_overlay(f, &ctx, area);
+            })
+            .unwrap();
+
+        // The overlay should have rendered the title and at least one of
+        // the section headers somewhere on the buffer.
+        let buffer = terminal.backend().buffer().clone();
+        let dump: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("help"));
+        assert!(dump.contains("Pick mode"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Filtered-row rendering: regression for bug where the highlight tracked
+    // `app.selected` against the *unfiltered* list.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn filtered_table_renders_only_matching_rows() {
+        use crate::app::App;
+        use crate::config::Config;
+
+        let sessions = vec![
+            make_session("alpha", None),
+            make_session("beta", None),
+            make_session("gamma", None),
+        ];
+        let mut app = App::new(sessions, &Config::default());
+        app.enter_filter_mode();
+        for c in "be".chars() {
+            app.filter_char(c);
+        }
+        // Only "beta" matches.
+        assert_eq!(app.filtered_indices.len(), 1);
+        assert_eq!(app.selected_name(), Some("beta"));
+
+        // Render a frame and confirm the buffer contains "beta" but not
+        // "alpha" / "gamma" — those should be filtered out, not just hidden
+        // behind the highlight.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let theme = crate::config::Theme::default();
+        let ctx = UiContext { theme: &theme };
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app, &ctx)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let dump: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("beta"));
+        assert!(!dump.contains("alpha"));
+        assert!(!dump.contains("gamma"));
     }
 }
