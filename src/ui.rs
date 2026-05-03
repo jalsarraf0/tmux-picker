@@ -15,20 +15,67 @@ fn format_name_display(session: &crate::session::Session) -> String {
     }
 }
 
+fn format_detail_line(session: &crate::session::Session) -> Option<String> {
+    let m = session.metadata.as_ref()?;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(ref p) = m.project {
+        parts.push(collapse_home(p));
+    }
+    if let Some(ref pu) = m.purpose {
+        parts.push(pu.clone());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("\u{21B3} {}", parts.join("  \u{00B7}  ")))
+    }
+}
+
+fn collapse_home(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = path.strip_prefix(&home)
+    {
+        return format!("~{rest}");
+    }
+    path.to_string()
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    // Split into 3 vertical sections: sessions table, actions bar, help bar.
+    let detail_height: u16 = app
+        .sessions
+        .get(app.selected)
+        .and_then(format_detail_line)
+        .map(|_| 1)
+        .unwrap_or(0);
+
     let chunks = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(detail_height),
         Constraint::Length(3),
         Constraint::Length(3),
     ])
     .split(area);
 
     draw_sessions(frame, app, chunks[0]);
-    draw_actions(frame, app, chunks[1]);
-    draw_help(frame, app, chunks[2]);
+    if detail_height > 0 {
+        draw_detail(frame, app, chunks[1]);
+    }
+    draw_actions(frame, app, chunks[2]);
+    draw_help(frame, app, chunks[3]);
+}
+
+fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(s) = app.sessions.get(app.selected)
+        && let Some(line) = format_detail_line(s)
+    {
+        let para = Paragraph::new(Line::from(Span::styled(
+            format!("   {line}"),
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(para, area);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +272,56 @@ mod tests {
         let mut s = make_session("main", None);
         s.metadata = Some(Metadata::default());
         assert_eq!(format_name_display(&s), "main");
+    }
+
+    #[test]
+    fn detail_line_with_project_only() {
+        let s = Session {
+            name: "main".into(),
+            window_count: 1,
+            attached: false,
+            current_command: "bash".into(),
+            last_activity: Duration::from_secs(0),
+            metadata: Some(Metadata {
+                project: Some("/home/u/git/app".into()),
+                ..Default::default()
+            }),
+        };
+        // SAFETY: tests may run in parallel. Best-effort assertion that prefix
+        // logic works at all.
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+        }
+        assert_eq!(format_detail_line(&s).unwrap(), "\u{21B3} ~/git/app");
+    }
+
+    #[test]
+    fn detail_line_with_purpose_only() {
+        let s = Session {
+            name: "main".into(),
+            window_count: 1,
+            attached: false,
+            current_command: "bash".into(),
+            last_activity: Duration::from_secs(0),
+            metadata: Some(Metadata {
+                purpose: Some("PR #234".into()),
+                ..Default::default()
+            }),
+        };
+        assert_eq!(format_detail_line(&s).unwrap(), "\u{21B3} PR #234");
+    }
+
+    #[test]
+    fn detail_line_none_for_no_metadata() {
+        let s = Session {
+            name: "main".into(),
+            window_count: 1,
+            attached: false,
+            current_command: "bash".into(),
+            last_activity: Duration::from_secs(0),
+            metadata: None,
+        };
+        assert!(format_detail_line(&s).is_none());
     }
 }
 
