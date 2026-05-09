@@ -4,7 +4,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
-use std::io::stderr;
+use std::io::{IsTerminal, stderr};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -152,13 +152,28 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     refresh_preview_if_needed(&mut app);
 
     // Main loop
+    //
+    // EOF-guard pattern (added 2026-05-09): when the parent TTY dies (SSH
+    // drop mid-prompt, terminal pane closed), crossterm's `event::poll`
+    // can return `Ok(false)` immediately rather than erroring, leading to
+    // a 100% CPU spin loop. We bail out early if stderr is no longer a
+    // terminal — that catches every realistic detached-TTY case.
+    let mut spin_guard_count: u32 = 0;
+    let mut spin_guard_window = Instant::now();
     loop {
+        if !stderr().is_terminal() {
+            // TTY went away. Drop out cleanly — caller will respawn on next login.
+            return Ok(Action::Shell);
+        }
         let theme = config.theme.clone();
         let ui_ctx = ui::UiContext { theme: &theme };
         terminal.draw(|f| ui::draw(f, &app, &ui_ctx))?;
 
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
+        let poll_started = Instant::now();
         if event::poll(timeout)? {
+            spin_guard_count = 0;
+            spin_guard_window = Instant::now();
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     input::handle_key(&mut app, key);
@@ -180,6 +195,25 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
                     }
                 }
                 _ => {}
+            }
+        } else {
+            // Belt-and-suspenders spin guard: if event::poll returns Ok(false)
+            // faster than ~10ms while we asked for up to TICK_RATE (250ms),
+            // the underlying TTY/event source is broken and crossterm is
+            // returning instantly. Track consecutive fast empties; bail out
+            // if we hit 200 in a 1-second window (~12 empties/250ms is the
+            // healthy max for a normal TICK_RATE wait).
+            if poll_started.elapsed() < Duration::from_millis(10) {
+                spin_guard_count = spin_guard_count.saturating_add(1);
+                if spin_guard_window.elapsed() >= Duration::from_secs(1) {
+                    spin_guard_window = Instant::now();
+                    spin_guard_count = 0;
+                } else if spin_guard_count > 200 {
+                    return Ok(Action::Shell);
+                }
+            } else {
+                spin_guard_count = 0;
+                spin_guard_window = Instant::now();
             }
         }
 
