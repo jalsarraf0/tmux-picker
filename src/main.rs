@@ -177,8 +177,10 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     input::handle_key(&mut app, key);
-                    if let Some(target) = app.take_pending_kill() {
-                        let _ = tmux::kill_session(&target);
+                    if let Some(target) = app.take_pending_kill()
+                        && let Err(e) = tmux::kill_session(&target)
+                    {
+                        app.set_flash(format!("kill failed: {e}"));
                     }
                     if let Some((old, new)) = app.take_pending_rename()
                         && let Err(e) = tmux::rename_session(&old, &new)

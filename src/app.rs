@@ -526,12 +526,15 @@ impl App {
     // Kill (with confirm)
     // -----------------------------------------------------------------------
 
-    /// Enter ConfirmKill mode for the currently-selected session. No-op if
-    /// the filtered list is empty.
+    /// Enter ConfirmKill mode for the currently-selected session. Flashes
+    /// "(no session to kill)" if the filtered list is empty so the user
+    /// gets feedback that K was received.
     pub fn enter_kill_confirm(&mut self) {
         if let Some(name) = self.selected_name() {
             self.kill_target = Some(name.to_string());
             self.mode = Mode::ConfirmKill;
+        } else {
+            self.set_flash("(no session to kill)".into());
         }
     }
 
@@ -1168,16 +1171,17 @@ mod tests {
     }
 
     #[test]
-    fn enter_kill_with_empty_filtered_list_is_noop() {
+    fn enter_kill_with_empty_filtered_list_flashes_and_stays() {
         let mut app = App::new(make_sessions(), &Config::default());
         app.enter_filter_mode();
         for c in "zzzzz".chars() {
             app.filter_char(c);
         }
         app.enter_kill_confirm();
-        // No selection → no mode transition.
+        // No selection → no mode transition, but a flash so the user sees K landed.
         assert_eq!(app.mode, Mode::Filter);
         assert!(app.kill_target.is_none());
+        assert_eq!(app.flash.as_deref(), Some("(no session to kill)"));
     }
 
     // -----------------------------------------------------------------------
