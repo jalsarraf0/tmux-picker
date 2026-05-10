@@ -4,7 +4,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
-use std::io::{IsTerminal, stderr};
+use std::io::{IsTerminal, stderr, stdin};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,6 +106,24 @@ fn run_init(force: bool) -> ExitCode {
 // Picker (existing TUI behavior)
 // ---------------------------------------------------------------------------
 
+/// Returns false if stdin (fd 0) is reporting POLLHUP / POLLERR / POLLNVAL
+/// on a zero-timeout libc::poll. Crossterm's `event::poll` treats POLLHUP
+/// as "ready" and then `try_read` spins on `read = 0`; this check lets the
+/// picker bail before it gets wedged.
+fn stdin_alive() -> bool {
+    let mut pfd = libc::pollfd {
+        fd: 0,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
+    if ret < 0 {
+        return false;
+    }
+    let bad = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+    (pfd.revents & bad) == 0
+}
+
 fn run_picker() -> ExitCode {
     let action = match picker_loop() {
         Ok(action) => action,
@@ -153,15 +171,34 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
     // Main loop
     //
-    // EOF-guard pattern (added 2026-05-09): when the parent TTY dies (SSH
-    // drop mid-prompt, terminal pane closed), crossterm's `event::poll`
-    // can return `Ok(false)` immediately rather than erroring, leading to
-    // a 100% CPU spin loop. We bail out early if stderr is no longer a
-    // terminal — that catches every realistic detached-TTY case.
+    // Detached-TTY guards (rewritten 2026-05-10 after a confirmed wedge):
+    //
+    // When the parent TTY dies (SSH drop, tmux pane closed mid-picker), the
+    // picker can wedge at 100% CPU. Confirmed via gdb backtrace + strace on
+    // a runaway PID: process is stuck inside `crossterm::event::poll` →
+    // `InternalEventReader::poll` → `UnixInternalEventSource::try_read`,
+    // doing `read(0, ..., 1024) = 0` ~100K times per second. Crossterm
+    // 0.29's mio source treats POLLHUP as "ready" and then spins on the
+    // EOF read trying to accumulate a full event sequence that will never
+    // arrive. Neither an IsTerminal check at the loop top nor between
+    // `event::poll` and `event::read` can help, because we never return
+    // from `event::poll` once we're wedged.
+    //
+    // Defense:
+    //
+    // 1. Pre-poll IsTerminal check on stdin AND stderr. Catches the easy
+    //    case where the pty has been gone since startup or between iters.
+    //
+    // 2. `stdin_alive()` — a libc::poll(stdin, 0) before each crossterm
+    //    poll/read. Detects POLLHUP/POLLERR/POLLNVAL on stdin and bails
+    //    before crossterm's mio source can spin. This is the load-bearing
+    //    guard; it runs every iter in ~microseconds.
+    //
+    // 3. Spin guard: belt-and-suspenders for the older `Ok(false)` fast-
+    //    return mode in case crossterm or mio behavior changes.
     let mut spin_guard_count: u32 = 0;
-    let mut spin_guard_window = Instant::now();
     loop {
-        if !stderr().is_terminal() {
+        if !stderr().is_terminal() || !stdin().is_terminal() || !stdin_alive() {
             // TTY went away. Drop out cleanly — caller will respawn on next login.
             return Ok(Action::Shell);
         }
@@ -171,9 +208,33 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
         let poll_started = Instant::now();
-        if event::poll(timeout)? {
+
+        // Poll stdin ourselves rather than letting crossterm do it. Crossterm
+        // 0.29's mio source treats POLLHUP as "ready" then spins forever in
+        // `try_read` on `read = 0`, never returning to us. libc::poll exposes
+        // the hangup bits directly so we can short-circuit.
+        let mut pfd = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let pres = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if pres < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Ok(Action::Shell);
+        }
+        let bad = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+        if pfd.revents & bad != 0 {
+            return Ok(Action::Shell);
+        }
+        let stdin_ready = pres > 0 && (pfd.revents & libc::POLLIN) != 0;
+
+        if stdin_ready && event::poll(Duration::from_millis(0))? {
             spin_guard_count = 0;
-            spin_guard_window = Instant::now();
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     input::handle_key(&mut app, key);
@@ -199,23 +260,21 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
                 _ => {}
             }
         } else {
-            // Belt-and-suspenders spin guard: if event::poll returns Ok(false)
-            // faster than ~10ms while we asked for up to TICK_RATE (250ms),
-            // the underlying TTY/event source is broken and crossterm is
-            // returning instantly. Track consecutive fast empties; bail out
-            // if we hit 200 in a 1-second window (~12 empties/250ms is the
-            // healthy max for a normal TICK_RATE wait).
+            // Either libc::poll timed out (healthy idle), or it returned
+            // POLLIN but crossterm had no decoded event yet. Belt-and-
+            // suspenders spin guard: if the iter came back faster than
+            // 10ms while we asked for up to TICK_RATE (250ms), something
+            // upstream is broken — count consecutive fast empties and
+            // bail at 500 (~3s of broken-loop time at ~5ms/iter). Healthy
+            // slow returns reset the counter; monotonic counting can't
+            // race the iter rate.
             if poll_started.elapsed() < Duration::from_millis(10) {
                 spin_guard_count = spin_guard_count.saturating_add(1);
-                if spin_guard_window.elapsed() >= Duration::from_secs(1) {
-                    spin_guard_window = Instant::now();
-                    spin_guard_count = 0;
-                } else if spin_guard_count > 200 {
+                if spin_guard_count > 500 {
                     return Ok(Action::Shell);
                 }
             } else {
                 spin_guard_count = 0;
-                spin_guard_window = Instant::now();
             }
         }
 
