@@ -74,19 +74,56 @@ else
     fail "NO_TMUX bypass" "got: $result"
 fi
 
-# --- Test 5: Non-SSH guard ---
-echo "Test 5: Non-SSH does not trigger"
+# --- Test 5: Local terminal triggers by default (trigger_mode=always) ---
+echo "Test 5: Local terminal triggers by default (trigger_mode=always)"
 result=$(SSH_CONNECTION="" TMUX="" bash -c '
-    [[ -z "$SSH_CONNECTION" ]] && echo "SKIPPED" || echo "TRIGGERED"
+    _mode="always"
+    if [[ -z "$SSH_CONNECTION" && "$_mode" == "ssh_only" ]]; then
+        echo "SKIPPED"
+    else
+        echo "TRIGGERED"
+    fi
 ')
-if [[ "$result" == "SKIPPED" ]]; then
-    pass "non-SSH skips picker"
+if [[ "$result" == "TRIGGERED" ]]; then
+    pass "local terminal triggers picker by default"
 else
-    fail "non-SSH guard" "got: $result"
+    fail "local terminal default trigger" "got: $result"
 fi
 
-# --- Test 6: Already in tmux guard ---
-echo "Test 6: Already-in-tmux does not trigger"
+# --- Test 6: trigger_mode=ssh_only skips local terminals ---
+echo "Test 6: trigger_mode=ssh_only skips local terminals"
+result=$(SSH_CONNECTION="" TMUX="" bash -c '
+    _mode="ssh_only"
+    if [[ -z "$SSH_CONNECTION" && "$_mode" == "ssh_only" ]]; then
+        echo "SKIPPED"
+    else
+        echo "TRIGGERED"
+    fi
+')
+if [[ "$result" == "SKIPPED" ]]; then
+    pass "ssh_only trigger_mode skips local terminals"
+else
+    fail "ssh_only skip" "got: $result"
+fi
+
+# --- Test 7: SSH always triggers regardless of trigger_mode ---
+echo "Test 7: SSH session triggers regardless of trigger_mode"
+result=$(SSH_CONNECTION="1 2 3 4" TMUX="" bash -c '
+    _mode="ssh_only"
+    if [[ -z "$SSH_CONNECTION" && "$_mode" == "ssh_only" ]]; then
+        echo "SKIPPED"
+    else
+        echo "TRIGGERED"
+    fi
+')
+if [[ "$result" == "TRIGGERED" ]]; then
+    pass "SSH session triggers regardless of trigger_mode"
+else
+    fail "SSH always triggers" "got: $result"
+fi
+
+# --- Test 8: Already in tmux guard ---
+echo "Test 8: Already-in-tmux does not trigger"
 result=$(SSH_CONNECTION="1 2 3 4" TMUX="/tmp/tmux-1000/default,123,0" bash -c '
     [[ -n "$TMUX" ]] && echo "SKIPPED" || echo "TRIGGERED"
 ')
@@ -96,8 +133,32 @@ else
     fail "already-in-tmux guard" "got: $result"
 fi
 
-# --- Test 7: --help exits 0 and lists subcommands ---
-echo "Test 7: --help mentions subcommands"
+# --- Test 9: --print-trigger-mode defaults to "always" ---
+echo "Test 9: --print-trigger-mode defaults to always"
+DEFAULT_CFG_HOME="$(mktemp -d)"
+mode=$(XDG_CONFIG_HOME="$DEFAULT_CFG_HOME" "$BINARY" --print-trigger-mode 2>/dev/null)
+rm -rf "$DEFAULT_CFG_HOME"
+if [[ "$mode" == "always" ]]; then
+    pass "--print-trigger-mode defaults to always"
+else
+    fail "--print-trigger-mode default" "got: $mode"
+fi
+
+# --- Test 10: --print-trigger-mode honours a ssh_only config override ---
+echo "Test 10: --print-trigger-mode honours trigger_mode = \"ssh_only\""
+SSHONLY_CFG_HOME="$(mktemp -d)"
+mkdir -p "$SSHONLY_CFG_HOME/tmux-picker"
+echo 'trigger_mode = "ssh_only"' > "$SSHONLY_CFG_HOME/tmux-picker/config.toml"
+mode=$(XDG_CONFIG_HOME="$SSHONLY_CFG_HOME" "$BINARY" --print-trigger-mode 2>/dev/null)
+rm -rf "$SSHONLY_CFG_HOME"
+if [[ "$mode" == "ssh_only" ]]; then
+    pass "--print-trigger-mode honours ssh_only override"
+else
+    fail "--print-trigger-mode ssh_only override" "got: $mode"
+fi
+
+# --- Test 11: --help exits 0 and lists subcommands ---
+echo "Test 11: --help mentions subcommands"
 help_out=$("$BINARY" --help 2>&1) && rc=0 || rc=$?
 if [[ $rc -eq 0 ]] \
     && grep -q "label" <<<"$help_out" \
@@ -108,13 +169,13 @@ else
     fail "--help" "exit=$rc; missing one of label/show/auto in output"
 fi
 
-# --- Test 8: --version exits 0 ---
-echo "Test 8: --version exits 0"
+# --- Test 12: --version exits 0 ---
+echo "Test 12: --version exits 0"
 "$BINARY" --version >/dev/null 2>&1 && pass "--version exits 0" \
     || fail "--version" "non-zero exit"
 
-# --- Test 9: label/show round-trip on default socket ---
-echo "Test 9: label/show round-trip"
+# --- Test 13: label/show round-trip on default socket ---
+echo "Test 13: label/show round-trip"
 SESS="e2e-label-$$"
 /usr/bin/tmux new-session -d -s "$SESS" 2>/dev/null
 sleep 0.1
@@ -127,8 +188,8 @@ else
 fi
 /usr/bin/tmux kill-session -t "$SESS" 2>/dev/null
 
-# --- Test 10: --check-config with no file ---
-echo "Test 10: --check-config with no config file"
+# --- Test 14: --check-config with no file ---
+echo "Test 14: --check-config with no config file"
 TMP_HOME="$(mktemp -d)"
 trap 'cleanup; rm -rf "$TMP_HOME"' EXIT
 out=$(HOME="$TMP_HOME" XDG_CONFIG_HOME="$TMP_HOME/.config" \
@@ -141,8 +202,8 @@ else
     fail "--check-config no file" "exit=$rc; got: $out"
 fi
 
-# --- Test 11: --check-config flags an unknown color ---
-echo "Test 11: --check-config flags unknown color"
+# --- Test 15: --check-config flags an unknown color ---
+echo "Test 15: --check-config flags unknown color"
 mkdir -p "$TMP_HOME/.config/tmux-picker"
 cat >"$TMP_HOME/.config/tmux-picker/config.toml" <<'TOML'
 timeout_secs = 5
@@ -159,8 +220,8 @@ else
     fail "--check-config unknown color" "exit=$rc; got: $out"
 fi
 
-# --- Test 12: --check-config accepts a hex color ---
-echo "Test 12: --check-config round-trips a hex color"
+# --- Test 16: --check-config accepts a hex color ---
+echo "Test 16: --check-config round-trips a hex color"
 cat >"$TMP_HOME/.config/tmux-picker/config.toml" <<'TOML'
 [theme]
 accent = "#ff8800"
@@ -175,8 +236,8 @@ else
     fail "--check-config hex" "exit=$rc; got: $out"
 fi
 
-# --- Test 13a: --init writes a starter config ---
-echo "Test 13a: --init writes a starter config"
+# --- Test 17a: --init writes a starter config ---
+echo "Test 17a: --init writes a starter config"
 INIT_HOME="$(mktemp -d)"
 out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
     "$BINARY" --init 2>&1) && rc=0 || rc=$?
@@ -188,8 +249,8 @@ else
     fail "--init writes starter config" "exit=$rc; got: $out"
 fi
 
-# --- Test 13b: --init refuses to overwrite without --force ---
-echo "Test 13b: --init refuses overwrite without --force"
+# --- Test 17b: --init refuses to overwrite without --force ---
+echo "Test 17b: --init refuses overwrite without --force"
 out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
     "$BINARY" --init 2>&1) && rc=0 || rc=$?
 if [[ $rc -ne 0 ]] && grep -q 'refusing to overwrite' <<<"$out"; then
@@ -198,8 +259,8 @@ else
     fail "--init no overwrite" "exit=$rc; got: $out"
 fi
 
-# --- Test 13c: --init --force overwrites ---
-echo "Test 13c: --init --force overwrites"
+# --- Test 17c: --init --force overwrites ---
+echo "Test 17c: --init --force overwrites"
 echo "stale" > "$INIT_HOME/.config/tmux-picker/config.toml"
 out=$(HOME="$INIT_HOME" XDG_CONFIG_HOME="$INIT_HOME/.config" \
     "$BINARY" --init --force 2>&1) && rc=0 || rc=$?
@@ -211,8 +272,8 @@ else
 fi
 rm -rf "$INIT_HOME"
 
-# --- Test 13: auto-label falls back to ~/git/<sessname> ---
-echo "Test 13: auto picks ~/git/<sess> when pane cwd has no repo"
+# --- Test 18: auto-label falls back to ~/git/<sessname> ---
+echo "Test 18: auto picks ~/git/<sess> when pane cwd has no repo"
 SESS="e2e-stub-$$"
 STUB_HOME="$(mktemp -d)"
 mkdir -p "$STUB_HOME/git/$SESS"

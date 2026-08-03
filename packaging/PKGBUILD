@@ -2,7 +2,7 @@
 pkgname=tmux-picker-bin
 pkgver=1.1.0
 pkgrel=1
-pkgdesc="TUI session picker for tmux on SSH login"
+pkgdesc="TUI session picker for tmux on SSH login and local terminals"
 arch=('x86_64')
 url="https://github.com/jalsarraf0/tmux-picker"
 license=('MIT')

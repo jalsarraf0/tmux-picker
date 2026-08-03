@@ -35,6 +35,9 @@ fn main() -> ExitCode {
     if cli.check_config {
         return run_check_config();
     }
+    if cli.print_trigger_mode {
+        return run_print_trigger_mode();
+    }
     match cli.command {
         None => run_picker(),
         Some(Command::Label {
@@ -64,6 +67,12 @@ fn run_check_config() -> ExitCode {
     println!();
     println!("# effective config");
     print!("{}", cfg.to_toml());
+    ExitCode::SUCCESS
+}
+
+fn run_print_trigger_mode() -> ExitCode {
+    let cfg = Config::load();
+    println!("{}", cfg.trigger_mode.as_str());
     ExitCode::SUCCESS
 }
 

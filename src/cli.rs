@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "tmux-picker",
     version,
-    about = "TUI session picker for tmux on SSH login",
+    about = "TUI session picker for tmux, on SSH login and local terminals",
     long_about = "Run with no arguments for the picker TUI. \
                   Subcommands manage per-session metadata (label/project/purpose) \
                   stored as tmux user-options."
@@ -23,6 +23,12 @@ pub struct Cli {
     /// Overwrite an existing config file when used with `--init`.
     #[arg(long, requires = "init")]
     pub force: bool,
+
+    /// Print the effective `trigger_mode` ("always" or "ssh_only") and
+    /// exit. Used internally by the shell hook to decide whether to run
+    /// on a local (non-SSH) terminal; not usually invoked by hand.
+    #[arg(long, hide = true)]
+    pub print_trigger_mode: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

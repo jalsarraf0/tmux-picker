@@ -1,8 +1,8 @@
 [package]
 name = "tmux-picker"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
-description = "TUI session picker for tmux on SSH login"
+description = "TUI session picker for tmux on SSH login and local terminals"
 authors = ["jalsarraf <19882582+jalsarraf0@users.noreply.github.com>"]
 license = "MIT"
 repository = "https://github.com/jalsarraf0/tmux-picker"

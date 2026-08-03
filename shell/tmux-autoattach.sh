@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tmux session picker — interactive SSH logins only.
+# tmux session picker — every new interactive shell, SSH or local.
 # Calls tmux-picker binary for TUI, cascades through fallbacks so the user
 # ALWAYS ends up inside tmux unless they explicitly choose a bare shell.
 #
@@ -7,7 +7,6 @@
 #   attach → new-session with that name → new "main" → bare shell (last resort)
 #   new    → new-session with that name → new "main" → bare shell (last resort)
 
-[[ -z "$SSH_CONNECTION" ]] && return
 [[ -n "$TMUX" ]] && return
 [[ "$-" != *i* ]] && return
 [[ -n "${NO_TMUX:-}" ]] && return
@@ -16,6 +15,19 @@
 
 _TMUX="/usr/bin/tmux"
 _PICKER="${HOME}/.local/bin/tmux-picker"
+
+# By default the picker fires for local terminals too, not just SSH logins.
+# Set `trigger_mode = "ssh_only"` in config.toml to restore SSH-only behaviour.
+if [[ -z "$SSH_CONNECTION" ]]; then
+    _mode="always"
+    if [[ -x "$_PICKER" ]]; then
+        _mode="$("$_PICKER" --print-trigger-mode 2>/dev/null)"
+        [[ -z "$_mode" ]] && _mode="always"
+    fi
+    if [[ "$_mode" == "ssh_only" ]]; then
+        return
+    fi
+fi
 
 # Verify tmux is available — cannot proceed without it
 if [[ ! -x "$_TMUX" ]]; then

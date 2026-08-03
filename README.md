@@ -1,6 +1,13 @@
 # tmux-picker
 
-A Rust TUI session picker for `tmux`. It runs the moment you SSH in, shows
+[MIT licensed](#license) — free to use, modify, and redistribute, provided
+**as-is with no warranty**; you're responsible for how you configure and run
+it. Installing via a human's hands or an AI agent are both fine — see
+[Install with an AI coding agent](#install-with-an-ai-coding-agent-claude-code--codex)
+for the one rule that keeps that safe.
+
+A Rust TUI session picker for `tmux`. It runs the moment you open a shell —
+SSH login or a local terminal window, whichever emulator you use — shows
 every tmux session with live status (attached/detached, running command,
 idle time, per-session label/project/purpose), and lands you in the right
 one — or a fresh one — without you ever touching `tmux ls`.
@@ -14,6 +21,10 @@ is missing, misconfigured, or errors out, the hook falls back to a plain
 
 ## Features
 
+- Fires on every new interactive shell by default — SSH login **and** local
+  terminals (GNOME Terminal, Konsole, kitty, Alacritty, xterm, iTerm2, …),
+  no per-terminal setup needed. Restrict it back to SSH-only via
+  `trigger_mode` — see [Configuration](#configuration).
 - Color-coded session list with attached indicator, command, and idle time.
 - 10-second auto-attach to the most recent detached session (configurable).
 - Numbered + arrow + j/k navigation.
@@ -50,7 +61,7 @@ is missing, misconfigured, or errors out, the hook falls back to a plain
 ## Install (by hand)
 
 Pick whichever matches how you manage binaries. All of these only install the
-`tmux-picker` binary — see [Enable the SSH auto-attach hook](#enable-the-ssh-auto-attach-hook)
+`tmux-picker` binary — see [Enable the auto-attach hook](#enable-the-auto-attach-hook)
 below to make it run automatically on login.
 
 ### From crates.io
@@ -89,21 +100,56 @@ tmux-picker --version
 ### Everything at once (recommended)
 
 `scripts/install.sh` does the clone-free equivalent of the steps above *and*
-installs the SSH auto-attach hook in one shot. From inside a checkout:
+installs the auto-attach hook in one shot. From inside a checkout:
 
 ```bash
 bash scripts/install.sh
 ```
 
-It builds the release binary, installs it to `~/.local/bin/tmux-picker`,
-copies `shell/tmux-autoattach.sh` to `~/.bashrc.d/tmux-autoattach.sh`, and
-runs a sanity check (`tmux-picker --version`). It's idempotent — re-run it
-any time to upgrade after `git pull`.
+The first thing it does — before touching any file — is ask **you** where
+the picker should run:
 
-## Enable the SSH auto-attach hook
+```
+Where should tmux-picker auto-run?
+  1) Everywhere  — SSH logins AND local terminal windows (any emulator)
+  2) SSH only    — the original behaviour; local terminals are untouched
 
-The hook only fires if your `~/.bashrc` actually sources
-`~/.bashrc.d/*.sh`. Fedora/RHEL ship this by default; other distros
+Choose [1/2] (default: 1):
+```
+
+Press Enter for "everywhere" (a workstation you sit at), or `2` for
+SSH-only (a headless server / shared box you'd rather not have grabbing
+every local login shell on). You can change your mind later without
+reinstalling — see `trigger_mode` in [Configuration](#configuration).
+
+Prefer not to be asked (scripting a fresh machine, cloud-init, etc.)? Pass
+the choice up front and the prompt is skipped:
+
+```bash
+bash scripts/install.sh --trigger-mode=always     # SSH + local terminals
+bash scripts/install.sh --trigger-mode=ssh_only   # SSH only
+```
+
+The script builds the release binary, installs it to
+`~/.local/bin/tmux-picker`, copies `shell/tmux-autoattach.sh` to
+`~/.bashrc.d/tmux-autoattach.sh`, writes your `trigger_mode` choice to
+`~/.config/tmux-picker/config.toml`, and runs a sanity check. It's
+idempotent — re-run it any time (with a new `--trigger-mode` if you want to
+change it) to upgrade after `git pull`.
+
+**If run non-interactively with no `--trigger-mode` flag** (no real
+terminal attached to stdin/stdout — the case an AI agent running the
+installer for you will usually hit), the script refuses to guess and exits
+with instructions to re-run with an explicit flag. That's intentional: this
+is a "will this run on every terminal I open" decision for you to make, not
+one the installer — or an AI acting on your behalf — should make silently.
+
+## Enable the auto-attach hook
+
+The hook fires on **every new interactive bash shell** — an SSH login or a
+local terminal window (any emulator: GNOME Terminal, Konsole, kitty,
+Alacritty, xterm, iTerm2, Terminal.app, …) — as long as your `~/.bashrc`
+sources `~/.bashrc.d/*.sh`. Fedora/RHEL ship that by default; other distros
 (Debian/Ubuntu, Arch, macOS+bash) usually don't, so add it once:
 
 ```bash
@@ -118,10 +164,21 @@ fi
 EOF
 ```
 
-Then open a new SSH session — you should land straight in the picker. To
-skip it once (e.g. for a script or a `scp`-only session), set `NO_TMUX=1`
-before connecting, or `export NO_TMUX=1` in an existing shell before
-re-sourcing.
+Then open a new SSH session, or just a fresh local terminal window — either
+way you should land straight in the picker. To skip it once (e.g. for a
+script or a `scp`-only session), set `NO_TMUX=1` before connecting, or
+`export NO_TMUX=1` in an existing shell before re-sourcing.
+
+Only want the picker over SSH, like the original behaviour? Set
+`trigger_mode = "ssh_only"` in `~/.config/tmux-picker/config.toml` — see
+[Configuration](#configuration).
+
+**zsh / fish users:** the hook is bash-specific (`[[ ]]`, `$SSH_CONNECTION`/
+`$TMUX` semantics) and a plain `source` from zsh/fish won't parse. Bridging
+it by shelling out to `bash -ic '...; exit'` from `~/.zshrc` is the general
+pattern, but this project only tests the bash/`~/.bashrc.d` path documented
+above — if you're on zsh or fish, that's the supported route; treat any
+bridge as unverified and expect to debug it yourself.
 
 ### First-run config
 
@@ -153,11 +210,20 @@ just won't be picked anymore.
 
 ## Install with an AI coding agent (Claude Code / Codex)
 
-If you'd rather have an agent do the clone-build-install-verify sequence
-(and safely handle the `~/.bashrc.d` sourcing check for your specific
-shell setup), hand it one of these prompts. Both agents can read this
-README directly from the repo, so a short pointer is enough — they'll pick
-up the exact commands above rather than improvising.
+Using an AI agent to run this installer is explicitly supported and
+allowed under the MIT license below — go ahead. The one rule: **the agent
+must ask you `always` vs `ssh_only` and wait for your answer before running
+`scripts/install.sh`.** It must not guess on your behalf. This isn't just a
+suggestion — `scripts/install.sh` itself enforces it: run non-interactively
+without `--trigger-mode`, and it refuses to install anything and prints
+instructions telling the agent to stop and ask you. That's what makes it
+safe to hand this whole task to an agent unattended: the worst case is it
+stops and asks, never that it silently makes local terminals do something
+you didn't want.
+
+Both prompts below tell the agent to ask first. Paste one in as-is — both
+agents can read this README straight from the repo, so a short pointer is
+enough; they'll pick up the exact commands above rather than improvising.
 
 ### Claude Code
 
@@ -165,25 +231,40 @@ up the exact commands above rather than improvising.
 Install tmux-picker from https://github.com/jalsarraf0/tmux-picker by
 following that repo's README.md exactly:
 1. Clone it into ~/git/tmux-picker (or ~/src if ~/git doesn't exist).
-2. Run scripts/install.sh.
-3. Check whether ~/.bashrc sources ~/.bashrc.d/*.sh; if not, add the
-   snippet from the README's "Enable the SSH auto-attach hook" section.
-4. Run `tmux-picker --version` and `tmux-picker --check-config` to confirm
-   the install is healthy.
-5. Tell me whether it's ready and what, if anything, needs a fresh SSH
-   session to take effect.
+2. Before running anything, ask me: "Should tmux-picker run on every local
+   terminal too, or only over SSH?" Wait for my answer.
+3. Run `scripts/install.sh --trigger-mode=always` or
+   `scripts/install.sh --trigger-mode=ssh_only` to match what I said — do
+   not run install.sh without that flag, and do not choose for me.
+4. Check whether ~/.bashrc sources ~/.bashrc.d/*.sh; if not, add the
+   snippet from the README's "Enable the auto-attach hook" section.
+5. Run `tmux-picker --version` and `tmux-picker --check-config` to confirm
+   the install is healthy, and confirm `tmux-picker --print-trigger-mode`
+   matches what I chose.
+6. Tell me whether it's ready and what, if anything, needs a fresh SSH
+   session or terminal window to take effect.
 Don't touch any other dotfiles or existing tmux sessions.
 ```
 
 ### Codex CLI
 
 ```
-codex exec "Clone https://github.com/jalsarraf0/tmux-picker, follow its
-README.md to build and install tmux-picker via scripts/install.sh, ensure
-~/.bashrc sources ~/.bashrc.d/*.sh (adding the README's snippet if it
-doesn't), then verify with tmux-picker --version. Report success/failure
-and any manual step I still need to do (e.g. starting a new SSH session)."
+codex exec "Before doing anything, ask the user: 'Should tmux-picker run on
+every local terminal, or only over SSH?' and wait for the answer — do not
+guess. Once answered, clone https://github.com/jalsarraf0/tmux-picker,
+follow its README.md to build and install tmux-picker via
+'scripts/install.sh --trigger-mode=always' or
+'scripts/install.sh --trigger-mode=ssh_only' matching the answer (never run
+install.sh without that flag), ensure ~/.bashrc sources ~/.bashrc.d/*.sh
+(adding the README's snippet if it doesn't), then verify with
+'tmux-picker --version' and 'tmux-picker --print-trigger-mode'. Report
+success/failure and any manual step still needed (e.g. starting a new SSH
+session or terminal window)."
 ```
+
+Provided as-is, MIT-licensed, no warranty — see [License](#license). You
+(and whichever agent you delegate to) are responsible for the `trigger_mode`
+you pick and how this ends up configured on your machines.
 
 Either agent should be able to do this unattended in a normal user account —
 the installer only touches `~/.local/bin`, `~/.bashrc.d`, `~/.config/tmux-picker`,
@@ -281,11 +362,21 @@ stderr warning — login auto-attach is never blocked by a malformed config.
 # 0 disables auto-attach (the picker waits for a manual choice).
 timeout_secs = 10
 
+# When the shell hook fires. "always" (default) runs on every new
+# interactive shell, SSH or local terminal alike. "ssh_only" restores the
+# original SSH-only behaviour.
+trigger_mode = "always"
+
 [theme]
 accent = "cyan"            # numbers, attached marker, prompt accents
 warning = "red"            # kill-confirm prompt, error highlights
 selection_bg = "darkgray"  # highlighted row background
 ```
+
+`trigger_mode` is read by the shell hook itself (via the internal
+`tmux-picker --print-trigger-mode` plumbing flag) before it decides whether
+to run on a non-SSH shell, so a `ssh_only` override takes effect on the very
+next new terminal — no reinstall needed.
 
 Recognized color names (case-insensitive): `black`, `red`, `green`, `yellow`,
 `blue`, `magenta`, `cyan`, `white`, `darkgray` (aliases: `gray`, `grey`),
@@ -319,16 +410,22 @@ re-read the config without restarting.
 
 ## Troubleshooting
 
-- **Nothing happens on SSH login** — check `~/.bashrc` sources
-  `~/.bashrc.d/*.sh` (see above), and that you're in an *interactive* shell
-  over SSH (`echo $SSH_CONNECTION`, `echo $-` should contain `i`).
+- **Nothing happens on SSH login or in a new local terminal** — check
+  `~/.bashrc` sources `~/.bashrc.d/*.sh` (see above), and that you're in an
+  *interactive* shell (`echo $-` should contain `i`). For SSH specifically,
+  also check `echo $SSH_CONNECTION` is non-empty.
+- **Local terminals don't trigger it, but SSH does** — check
+  `tmux-picker --print-trigger-mode`; if it prints `ssh_only`, either
+  remove/comment `trigger_mode` in `~/.config/tmux-picker/config.toml` or
+  set it to `"always"`.
 - **"tmux not found at /usr/bin/tmux"** — the hook hardcodes that path;
   symlink your tmux there or edit `_TMUX` in
   `~/.bashrc.d/tmux-autoattach.sh`.
 - **Picker pegs CPU / won't exit** — this was a real bug (detached-PTY
   wedge) fixed in the commit tagged `fix: detached-pty wedge`; make sure
   you're on a version at or after that fix.
-- **Want to skip the picker just once** — `NO_TMUX=1 ssh host`.
+- **Want to skip the picker just once** — `NO_TMUX=1 ssh host`, or
+  `export NO_TMUX=1` before opening a local terminal tab/window.
 
 ## Test
 
@@ -355,4 +452,19 @@ bash tests/e2e.sh
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). In short: free to use, copy, modify,
+merge, publish, distribute, sublicense, and sell, with attribution
+(keep the copyright notice), and:
+
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+That applies to the auto-attach hook and the trigger-mode behaviour above,
+too — you (or your AI agent) choosing `trigger_mode` and running the
+installer is done at your own discretion and risk; the author takes no
+responsibility for how it's configured or used on your systems.

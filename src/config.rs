@@ -18,6 +18,12 @@ pub const STARTER_TOML: &str = r##"# tmux-picker — starter config
 # 0 disables auto-attach (the picker waits for a manual choice).
 timeout_secs = 10
 
+# When the auto-attach shell hook fires. "always" (default) runs the picker
+# on every new interactive shell — SSH login or a local terminal window
+# alike. "ssh_only" restores the original behaviour and skips local
+# terminals, only firing over SSH.
+trigger_mode = "always"
+
 # Theme overrides. Values: black|red|green|yellow|blue|magenta|cyan|white,
 # darkgray (alias gray/grey), light{red,green,yellow,blue,magenta,cyan},
 # 256-colour indexes ("196" or 196), or hex like "#ff8800" / "#abc".
@@ -47,8 +53,38 @@ pub fn config_file_path() -> Option<std::path::PathBuf> {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub timeout_secs: u64,
+    pub trigger_mode: TriggerMode,
     pub theme: Theme,
     pub markers: Markers,
+}
+
+/// When the shell hook should run the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriggerMode {
+    /// Every new interactive shell — SSH login or a local terminal alike.
+    #[default]
+    Always,
+    /// Only shells started over SSH (the original tmux-picker behaviour).
+    SshOnly,
+}
+
+impl TriggerMode {
+    /// Lowercase string used both in TOML and on the `--print-trigger-mode`
+    /// stdout line the shell hook reads.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriggerMode::Always => "always",
+            TriggerMode::SshOnly => "ssh_only",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "always" => Some(TriggerMode::Always),
+            "ssh_only" | "ssh-only" | "ssh" => Some(TriggerMode::SshOnly),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -144,6 +180,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            trigger_mode: TriggerMode::default(),
             theme: Theme::default(),
             markers: Markers::default(),
         }
@@ -217,6 +254,15 @@ impl Config {
             }
         }
 
+        if let Some(v) = table.get("trigger_mode") {
+            match v.as_str().and_then(TriggerMode::from_str) {
+                Some(mode) => cfg.trigger_mode = mode,
+                None => warnings.push(format!(
+                    "trigger_mode must be \"always\" or \"ssh_only\", got {v:?}; using default"
+                )),
+            }
+        }
+
         if let Some(theme_val) = table.get("theme") {
             match theme_val.as_table() {
                 Some(theme_table) => {
@@ -283,6 +329,10 @@ impl Config {
     pub fn to_toml(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("timeout_secs = {}\n", self.timeout_secs));
+        out.push_str(&format!(
+            "trigger_mode = \"{}\"\n",
+            self.trigger_mode.as_str()
+        ));
         out.push_str("\n[theme]\n");
         out.push_str(&format!("accent = {}\n", color_to_toml(self.theme.accent)));
         out.push_str(&format!(
@@ -455,6 +505,60 @@ mod tests {
         let (cfg, warnings) = Config::from_str_with_warnings("timeout_secs = \"oops\"");
         assert_eq!(cfg.timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert!(warnings.iter().any(|w| w.contains("timeout_secs")));
+    }
+
+    #[test]
+    fn trigger_mode_defaults_to_always() {
+        let cfg = Config::from_str("");
+        assert_eq!(cfg.trigger_mode, TriggerMode::Always);
+    }
+
+    #[test]
+    fn trigger_mode_ssh_only_override() {
+        let cfg = Config::from_str(r#"trigger_mode = "ssh_only""#);
+        assert_eq!(cfg.trigger_mode, TriggerMode::SshOnly);
+    }
+
+    #[test]
+    fn trigger_mode_case_insensitive_and_aliases() {
+        assert_eq!(
+            Config::from_str(r#"trigger_mode = "SSH_ONLY""#).trigger_mode,
+            TriggerMode::SshOnly
+        );
+        assert_eq!(
+            Config::from_str(r#"trigger_mode = "ssh-only""#).trigger_mode,
+            TriggerMode::SshOnly
+        );
+        assert_eq!(
+            Config::from_str(r#"trigger_mode = "ssh""#).trigger_mode,
+            TriggerMode::SshOnly
+        );
+        assert_eq!(
+            Config::from_str(r#"trigger_mode = "ALWAYS""#).trigger_mode,
+            TriggerMode::Always
+        );
+    }
+
+    #[test]
+    fn trigger_mode_invalid_value_warns_and_keeps_default() {
+        let (cfg, warnings) = Config::from_str_with_warnings(r#"trigger_mode = "sometimes""#);
+        assert_eq!(cfg.trigger_mode, TriggerMode::Always);
+        assert!(warnings.iter().any(|w| w.contains("trigger_mode")));
+    }
+
+    #[test]
+    fn trigger_mode_wrong_type_warns() {
+        let (cfg, warnings) = Config::from_str_with_warnings("trigger_mode = 7");
+        assert_eq!(cfg.trigger_mode, TriggerMode::Always);
+        assert!(warnings.iter().any(|w| w.contains("trigger_mode")));
+    }
+
+    #[test]
+    fn to_toml_includes_trigger_mode() {
+        let mut cfg = Config::default();
+        cfg.trigger_mode = TriggerMode::SshOnly;
+        let s = cfg.to_toml();
+        assert!(s.contains("trigger_mode = \"ssh_only\""));
     }
 
     #[test]
@@ -674,6 +778,7 @@ mod tests {
         let cfg = Config::from_str(STARTER_TOML);
         let default = Config::default();
         assert_eq!(cfg.timeout_secs, default.timeout_secs);
+        assert_eq!(cfg.trigger_mode, default.trigger_mode);
         assert!(matches!(cfg.theme.accent, Color::Cyan));
         assert!(matches!(cfg.theme.warning, Color::Red));
         assert!(matches!(cfg.theme.selection_bg, Color::DarkGray));
