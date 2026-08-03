@@ -4,7 +4,8 @@
 **as-is with no warranty**; you're responsible for how you configure and run
 it. Installing via a human's hands or an AI agent are both fine — see
 [Install with an AI coding agent](#install-with-an-ai-coding-agent-claude-code--codex)
-for the one rule that keeps that safe.
+for the one rule that keeps that safe. See [`CHANGELOG.md`](CHANGELOG.md)
+for what's new in each release.
 
 A Rust TUI session picker for `tmux`. It runs the moment you open a shell —
 SSH login or a local terminal window, whichever emulator you use — shows
