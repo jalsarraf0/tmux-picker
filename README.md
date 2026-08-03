@@ -1,8 +1,16 @@
 # tmux-picker
 
-Rust TUI session picker for tmux. Runs on SSH login, renders to stderr, prints
-the chosen action to stdout. A bash stub (`shell/tmux-autoattach.sh`) reads
-stdout and execs tmux (or drops to a shell if the user picked `s`).
+A Rust TUI session picker for `tmux`. It runs the moment you SSH in, shows
+every tmux session with live status (attached/detached, running command,
+idle time, per-session label/project/purpose), and lands you in the right
+one — or a fresh one — without you ever touching `tmux ls`.
+
+The picker renders to `stderr` and prints the chosen action to `stdout`. A
+small bash hook (`shell/tmux-autoattach.sh`) reads that action and execs
+`tmux attach` / `tmux new-session` (or drops to a bare shell if you
+explicitly ask for one). Everything is designed to fail open: if the binary
+is missing, misconfigured, or errors out, the hook falls back to a plain
+`tmux new-session -As main` rather than leaving you stranded.
 
 ## Features
 
@@ -29,7 +37,21 @@ stdout and execs tmux (or drops to a shell if the user picked `s`).
 - Optional user config at `~/.config/tmux-picker/config.toml` for the auto-attach
   timeout, theme colors, and process markers.
 
-## Install
+## Requirements
+
+- Linux or macOS with `bash` and `tmux` installed.
+- A Rust toolchain (`cargo` — stable, 2024 edition support) **only** if you're
+  building from source. Pre-built binaries and crates.io don't need this on
+  the install path, but `cargo install`/`cargo binstall` still shell out to
+  cargo.
+- SSH access to the box you want session-picking on (this is meant to run on
+  every SSH login, but works fine as a plain interactive-shell tool too).
+
+## Install (by hand)
+
+Pick whichever matches how you manage binaries. All of these only install the
+`tmux-picker` binary — see [Enable the SSH auto-attach hook](#enable-the-ssh-auto-attach-hook)
+below to make it run automatically on login.
 
 ### From crates.io
 
@@ -48,14 +70,58 @@ cargo binstall tmux-picker
 A `PKGBUILD` ships under `packaging/PKGBUILD` for the `tmux-picker-bin`
 package; clone it and build with `makepkg -si`.
 
-### Build from source
+### Build from source, step by step
 
 ```bash
+git clone https://github.com/jalsarraf0/tmux-picker.git
+cd tmux-picker
 cargo build --release
-cp target/release/tmux-picker ~/.local/bin/
+install -m 0755 target/release/tmux-picker ~/.local/bin/tmux-picker
 ```
 
-Or use `scripts/install.sh` for a complete setup that includes the shell hook.
+Make sure `~/.local/bin` is on your `PATH` (`echo $PATH | tr ':' '\n' | grep local/bin`).
+Confirm it works:
+
+```bash
+tmux-picker --version
+```
+
+### Everything at once (recommended)
+
+`scripts/install.sh` does the clone-free equivalent of the steps above *and*
+installs the SSH auto-attach hook in one shot. From inside a checkout:
+
+```bash
+bash scripts/install.sh
+```
+
+It builds the release binary, installs it to `~/.local/bin/tmux-picker`,
+copies `shell/tmux-autoattach.sh` to `~/.bashrc.d/tmux-autoattach.sh`, and
+runs a sanity check (`tmux-picker --version`). It's idempotent — re-run it
+any time to upgrade after `git pull`.
+
+## Enable the SSH auto-attach hook
+
+The hook only fires if your `~/.bashrc` actually sources
+`~/.bashrc.d/*.sh`. Fedora/RHEL ship this by default; other distros
+(Debian/Ubuntu, Arch, macOS+bash) usually don't, so add it once:
+
+```bash
+grep -q 'bashrc.d' ~/.bashrc || cat >> ~/.bashrc <<'EOF'
+
+# Source drop-in scripts (tmux-picker, etc.)
+if [ -d ~/.bashrc.d ]; then
+  for rc in ~/.bashrc.d/*.sh; do
+    [ -r "$rc" ] && . "$rc"
+  done
+fi
+EOF
+```
+
+Then open a new SSH session — you should land straight in the picker. To
+skip it once (e.g. for a script or a `scp`-only session), set `NO_TMUX=1`
+before connecting, or `export NO_TMUX=1` in an existing shell before
+re-sourcing.
 
 ### First-run config
 
@@ -64,7 +130,65 @@ tmux-picker --init    # writes ~/.config/tmux-picker/config.toml
 ```
 
 The starter file documents every available knob; pass `--force` to
-overwrite a hand-edited config.
+overwrite a hand-edited config. See [Configuration](#configuration) for the
+full key reference.
+
+### Verifying it's working
+
+```bash
+tmux-picker --check-config   # parse warnings + effective config, no TUI
+tmux new-session -d -s smoke # create a detached session to pick from
+# then open a fresh SSH connection and confirm "smoke" shows up
+```
+
+### Uninstall
+
+```bash
+rm -f ~/.local/bin/tmux-picker ~/.bashrc.d/tmux-autoattach.sh
+rm -rf ~/.config/tmux-picker
+```
+
+Existing tmux sessions and their user-option metadata are untouched; they
+just won't be picked anymore.
+
+## Install with an AI coding agent (Claude Code / Codex)
+
+If you'd rather have an agent do the clone-build-install-verify sequence
+(and safely handle the `~/.bashrc.d` sourcing check for your specific
+shell setup), hand it one of these prompts. Both agents can read this
+README directly from the repo, so a short pointer is enough — they'll pick
+up the exact commands above rather than improvising.
+
+### Claude Code
+
+```
+Install tmux-picker from https://github.com/jalsarraf0/tmux-picker by
+following that repo's README.md exactly:
+1. Clone it into ~/git/tmux-picker (or ~/src if ~/git doesn't exist).
+2. Run scripts/install.sh.
+3. Check whether ~/.bashrc sources ~/.bashrc.d/*.sh; if not, add the
+   snippet from the README's "Enable the SSH auto-attach hook" section.
+4. Run `tmux-picker --version` and `tmux-picker --check-config` to confirm
+   the install is healthy.
+5. Tell me whether it's ready and what, if anything, needs a fresh SSH
+   session to take effect.
+Don't touch any other dotfiles or existing tmux sessions.
+```
+
+### Codex CLI
+
+```
+codex exec "Clone https://github.com/jalsarraf0/tmux-picker, follow its
+README.md to build and install tmux-picker via scripts/install.sh, ensure
+~/.bashrc sources ~/.bashrc.d/*.sh (adding the README's snippet if it
+doesn't), then verify with tmux-picker --version. Report success/failure
+and any manual step I still need to do (e.g. starting a new SSH session)."
+```
+
+Either agent should be able to do this unattended in a normal user account —
+the installer only touches `~/.local/bin`, `~/.bashrc.d`, `~/.config/tmux-picker`,
+and (if missing) appends the sourcing snippet to `~/.bashrc`. It never needs
+root and never modifies system files.
 
 ## CLI
 
@@ -192,6 +316,19 @@ Built-in defaults: `claude → 🤖`, `vim`/`nvim → ✏️`, `htop`/`btop`/`to
 
 Send `SIGHUP` to a running picker (`kill -HUP $(pgrep tmux-picker)`) to
 re-read the config without restarting.
+
+## Troubleshooting
+
+- **Nothing happens on SSH login** — check `~/.bashrc` sources
+  `~/.bashrc.d/*.sh` (see above), and that you're in an *interactive* shell
+  over SSH (`echo $SSH_CONNECTION`, `echo $-` should contain `i`).
+- **"tmux not found at /usr/bin/tmux"** — the hook hardcodes that path;
+  symlink your tmux there or edit `_TMUX` in
+  `~/.bashrc.d/tmux-autoattach.sh`.
+- **Picker pegs CPU / won't exit** — this was a real bug (detached-PTY
+  wedge) fixed in the commit tagged `fix: detached-pty wedge`; make sure
+  you're on a version at or after that fix.
+- **Want to skip the picker just once** — `NO_TMUX=1 ssh host`.
 
 ## Test
 
