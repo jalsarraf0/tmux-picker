@@ -76,16 +76,66 @@ below to make it run automatically on login.
 cargo install tmux-picker
 ```
 
+> Not published yet as of the last update to this section — `cargo publish`
+> is blocked on an expired/invalid token, unrelated to the code. Use one of
+> the options below in the meantime; this will be updated once it's live.
+
 ### Pre-built binary (cargo-binstall)
 
 ```bash
 cargo binstall tmux-picker
 ```
 
+### Fedora / RHEL / openSUSE (.rpm)
+
+```bash
+curl -LO https://github.com/jalsarraf0/tmux-picker/releases/download/v1.2.1/tmux-picker-1.2.1-1.x86_64.rpm
+sudo dnf install ./tmux-picker-1.2.1-1.x86_64.rpm   # or: sudo zypper install ./tmux-picker-*.rpm
+```
+
+Wires the auto-attach hook into `/etc/bashrc` automatically (post-install
+script) — no manual "enable the hook" step needed. Default `trigger_mode`
+is `"always"`; see [Configuration](#configuration) to restrict to SSH only.
+
+### Debian / Ubuntu (.deb)
+
+```bash
+curl -LO https://github.com/jalsarraf0/tmux-picker/releases/download/v1.2.1/tmux-picker_1.2.1_amd64.deb
+sudo apt install ./tmux-picker_1.2.1_amd64.deb
+```
+
+Same deal — wires itself into `/etc/bash.bashrc` automatically on install.
+
 ### Arch Linux (AUR)
 
-A `PKGBUILD` ships under `packaging/PKGBUILD` for the `tmux-picker-bin`
-package; clone it and build with `makepkg -si`.
+`packaging/PKGBUILD` + `packaging/tmux-picker.install` build the
+`tmux-picker-bin` package (both files are required — the `.install` file is
+what wires the hook into `/etc/bash.bashrc`):
+
+```bash
+git clone https://github.com/jalsarraf0/tmux-picker.git
+cd tmux-picker/packaging
+makepkg -si
+```
+
+Not yet submitted to the real AUR (needs an AUR account + registered SSH
+key this environment doesn't have) — building locally from the repo works
+today; `pacman -U` the resulting package or use the `makepkg -si` above.
+
+### macOS / Linuxbrew (Homebrew)
+
+No tap yet, so install straight from the formula file:
+
+```bash
+brew install --formula https://raw.githubusercontent.com/jalsarraf0/tmux-picker/main/packaging/homebrew/tmux-picker.rb
+```
+
+Builds from source via `cargo` (a couple of minutes). **Not build-tested on
+real macOS** — the dependencies (ratatui/crossterm/etc.) all support macOS,
+but this formula hasn't been run there yet; treat it as best-effort until
+someone confirms. Homebrew formulae don't touch dotfiles, so you'll need to
+add the sourcing line yourself — `brew info tmux-picker` after install shows
+the exact snippet (also in `packaging/homebrew/tmux-picker.rb`'s `caveats`).
 
 ### Build from source, step by step
 
@@ -495,14 +545,34 @@ bash tests/e2e.sh
 1. Bump `version` in `Cargo.toml`.
 2. Update `packaging/PKGBUILD`'s `pkgver` to match.
 3. `cargo publish --dry-run` and resolve any warnings.
-4. Tag and push: `git tag v$VERSION && git push --tags`.
-5. Build per-target tarballs and attach them to the GitHub release so
-   `cargo binstall` and the AUR `PKGBUILD` can find them. Each tarball
-   should contain `tmux-picker`, `shell/tmux-autoattach.sh`, `LICENSE`,
-   and `README.md` under a directory named
-   `tmux-picker-$VERSION-$TARGET/`.
-6. `cargo publish` to crates.io.
-7. Submit / refresh the AUR package.
+4. Tag and push: `git tag -s -m "Release v$VERSION" v$VERSION && git push origin v$VERSION`.
+5. Build the per-target release tarball and attach it to the GitHub release
+   so `cargo binstall` and the AUR `PKGBUILD` can find it. It must contain
+   `tmux-picker`, a **flat** `tmux-autoattach.sh` (not nested under
+   `shell/`), `LICENSE`, and `README.md`, all directly inside a directory
+   named `tmux-picker-$VERSION-$TARGET/`.
+6. Build the native packages: `bash packaging/build-native-packages.sh`
+   (needs [`fpm`](https://fpm.readthedocs.io) — produces both `.deb` and
+   `.rpm` into `dist/`). Sanity-check them before attaching — the
+   post-install/pre-remove scripts wire and unwire a system-wide bashrc
+   block, so at minimum verify in a throwaway container:
+   ```bash
+   docker run --rm -v "$PWD/dist:/pkgs:ro" fedora:latest \
+     bash -c 'dnf install -y /pkgs/tmux-picker-*.rpm && grep -A2 "BEGIN tmux-picker" /etc/bashrc'
+   docker run --rm -v "$PWD/dist:/pkgs:ro" debian:latest \
+     bash -c 'apt-get update -qq && apt-get install -y /pkgs/tmux-picker_*.deb && grep -A2 "BEGIN tmux-picker" /etc/bash.bashrc'
+   ```
+   Also check the *reinstall/upgrade* case doesn't strip the block (the
+   `--before-remove` script only strips on a genuine removal — rpm passes
+   `$1=0` for that, deb passes `remove`/`purge` — never on upgrade).
+7. `gh release create v$VERSION dist/*.deb dist/*.rpm tmux-picker-$VERSION-$TARGET.tar.gz ...`
+   (or `gh release upload` onto an already-created release).
+8. `cargo publish` to crates.io.
+9. Submit / refresh the AUR package — clone
+   `ssh://aur@aur.archlinux.org/tmux-picker-bin.git`, copy in `PKGBUILD` +
+   `tmux-picker.install`, regenerate `.SRCINFO`
+   (`makepkg --printsrcinfo > .SRCINFO`), commit, push. Requires an AUR
+   account with a registered SSH key.
 
 ## License
 

@@ -1,0 +1,38 @@
+HOOK_SRC="/usr/share/tmux-picker/tmux-autoattach.sh"
+MARKER_START="# BEGIN tmux-picker auto-attach hook (managed by the tmux-picker package)"
+MARKER_END="# END tmux-picker auto-attach hook"
+RC_FILE="/etc/bash.bashrc"
+
+_wire() {
+    [ -f "$RC_FILE" ] || return 0
+    grep -qF "$MARKER_START" "$RC_FILE" 2>/dev/null && return 0
+    {
+        echo ""
+        echo "$MARKER_START"
+        echo "[ -r \"$HOOK_SRC\" ] && . \"$HOOK_SRC\""
+        echo "$MARKER_END"
+    } >> "$RC_FILE"
+    echo "tmux-picker: wired auto-attach into $RC_FILE"
+    echo "tmux-picker: default trigger_mode is \"always\" (SSH + local terminals)."
+    echo "tmux-picker: to restrict to SSH only, set trigger_mode = \"ssh_only\" in"
+    echo "tmux-picker: ~/.config/tmux-picker/config.toml (run 'tmux-picker --init' for a starter file)."
+}
+
+_unwire() {
+    [ -f "$RC_FILE" ] || return 0
+    grep -qF "$MARKER_START" "$RC_FILE" 2>/dev/null || return 0
+    sed -i.tmux-picker-bak "/^$(printf '%s' "$MARKER_START" | sed 's/[.[\*^$/]/\\&/g')$/,/^$(printf '%s' "$MARKER_END" | sed 's/[.[\*^$/]/\\&/g')$/d" "$RC_FILE"
+    rm -f "$RC_FILE.tmux-picker-bak"
+}
+
+post_install() {
+    _wire
+}
+
+post_upgrade() {
+    _wire
+}
+
+pre_remove() {
+    _unwire
+}

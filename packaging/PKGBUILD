@@ -14,16 +14,22 @@ optdepends=(
 )
 provides=('tmux-picker')
 conflicts=('tmux-picker')
+install=tmux-picker.install
 source=(
     "$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/tmux-picker-$pkgver-x86_64-unknown-linux-gnu.tar.gz"
 )
 sha256sums=('SKIP')
 
+# The auto-attach hook is wired into /etc/bash.bashrc (Arch's system-wide
+# interactive bash rc, sourced for both login AND local-terminal shells) by
+# tmux-picker.install's post_install/post_upgrade/pre_remove — NOT
+# /etc/profile.d, which only fires for login shells and would silently
+# fail to deliver local-terminal auto-attach.
 package() {
     install -Dm755 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/tmux-picker" \
         "$pkgdir/usr/bin/tmux-picker"
     install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/tmux-autoattach.sh" \
-        "$pkgdir/etc/profile.d/tmux-autoattach.sh"
+        "$pkgdir/usr/share/tmux-picker/tmux-autoattach.sh"
     install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/LICENSE" \
         "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$srcdir/tmux-picker-$pkgver-x86_64-unknown-linux-gnu/README.md" \
