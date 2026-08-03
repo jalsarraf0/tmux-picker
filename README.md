@@ -58,6 +58,12 @@ is missing, misconfigured, or errors out, the hook falls back to a plain
 - SSH access to the box you want session-picking on (this is meant to run on
   every SSH login, but works fine as a plain interactive-shell tool too).
 
+Missing `tmux` or `cargo`? `scripts/install.sh` can install both for you —
+see `--auto-deps` under [Everything at once](#everything-at-once-recommended)
+below. It's opt-in for the same reason `trigger_mode` is: installing system
+packages (possibly via `sudo`) isn't something the installer should do
+without asking first.
+
 ## Install (by hand)
 
 Pick whichever matches how you manage binaries. All of these only install the
@@ -144,6 +150,30 @@ with instructions to re-run with an explicit flag. That's intentional: this
 is a "will this run on every terminal I open" decision for you to make, not
 one the installer — or an AI acting on your behalf — should make silently.
 
+### Missing `tmux` or `cargo`? (`--auto-deps`)
+
+If either is missing, the same pattern applies: interactively, you're asked
+`Install missing dependencies now (may use sudo)? [y/N]`; non-interactively,
+the script refuses and tells you (or your AI agent) to re-run with a flag:
+
+```bash
+bash scripts/install.sh --auto-deps      # install missing tmux/cargo automatically
+bash scripts/install.sh --no-auto-deps   # skip; fail on missing cargo, warn on missing tmux
+```
+
+`--auto-deps` detects your package manager (`apt`, `dnf`, `pacman`,
+`zypper`, `apk`, or `brew`) and installs `tmux` through it (via `sudo`
+unless already root), and installs a Rust toolchain through
+[rustup](https://rustup.rs) if `cargo` is missing — distro `cargo` packages
+are frequently too old for this project's `edition = "2024"`, so rustup
+(not the system package) is what gets used for that one.
+
+Fully hands-off — no prompts at all, e.g. cloud-init or a first-boot script:
+
+```bash
+bash scripts/install.sh --trigger-mode=always --auto-deps
+```
+
 ## Enable the auto-attach hook
 
 The hook fires on **every new interactive bash shell** — an SSH login or a
@@ -211,15 +241,18 @@ just won't be picked anymore.
 ## Install with an AI coding agent (Claude Code / Codex)
 
 Using an AI agent to run this installer is explicitly supported and
-allowed under the MIT license below — go ahead. The one rule: **the agent
-must ask you `always` vs `ssh_only` and wait for your answer before running
-`scripts/install.sh`.** It must not guess on your behalf. This isn't just a
-suggestion — `scripts/install.sh` itself enforces it: run non-interactively
-without `--trigger-mode`, and it refuses to install anything and prints
-instructions telling the agent to stop and ask you. That's what makes it
-safe to hand this whole task to an agent unattended: the worst case is it
-stops and asks, never that it silently makes local terminals do something
-you didn't want.
+allowed under the MIT license below — go ahead. The rule: **the agent must
+ask you (1) `always` vs `ssh_only`, and (2) whether it's OK to auto-install
+`tmux`/a Rust toolchain if either is missing, and wait for both answers
+before running `scripts/install.sh`.** It must not guess either on your
+behalf. This isn't just a suggestion — `scripts/install.sh` itself enforces
+both: run non-interactively without `--trigger-mode`, and it refuses and
+prints instructions telling the agent to stop and ask about that; hit a
+missing `tmux`/`cargo` non-interactively without `--auto-deps`/
+`--no-auto-deps`, and it refuses the same way. That's what makes it safe to
+hand this whole task to an agent unattended: the worst case is it stops and
+asks, never that it silently changes what every terminal does or reaches
+for `sudo` on its own.
 
 Both prompts below tell the agent to ask first. Paste one in as-is — both
 agents can read this README straight from the repo, so a short pointer is
@@ -231,11 +264,16 @@ enough; they'll pick up the exact commands above rather than improvising.
 Install tmux-picker from https://github.com/jalsarraf0/tmux-picker by
 following that repo's README.md exactly:
 1. Clone it into ~/git/tmux-picker (or ~/src if ~/git doesn't exist).
-2. Before running anything, ask me: "Should tmux-picker run on every local
-   terminal too, or only over SSH?" Wait for my answer.
+2. Before running anything, ask me two things and wait for both answers:
+   a. "Should tmux-picker run on every local terminal too, or only over
+      SSH?"
+   b. "If tmux or a Rust toolchain (cargo) is missing, OK to install them
+      automatically (may use sudo)?"
 3. Run `scripts/install.sh --trigger-mode=always` or
-   `scripts/install.sh --trigger-mode=ssh_only` to match what I said — do
-   not run install.sh without that flag, and do not choose for me.
+   `scripts/install.sh --trigger-mode=ssh_only` to match (a), plus
+   `--auto-deps` or `--no-auto-deps` to match (b) — e.g.
+   `scripts/install.sh --trigger-mode=always --auto-deps`. Do not run
+   install.sh without both flags, and do not choose either for me.
 4. Check whether ~/.bashrc sources ~/.bashrc.d/*.sh; if not, add the
    snippet from the README's "Enable the auto-attach hook" section.
 5. Run `tmux-picker --version` and `tmux-picker --check-config` to confirm
@@ -249,27 +287,35 @@ Don't touch any other dotfiles or existing tmux sessions.
 ### Codex CLI
 
 ```
-codex exec "Before doing anything, ask the user: 'Should tmux-picker run on
-every local terminal, or only over SSH?' and wait for the answer — do not
-guess. Once answered, clone https://github.com/jalsarraf0/tmux-picker,
-follow its README.md to build and install tmux-picker via
-'scripts/install.sh --trigger-mode=always' or
-'scripts/install.sh --trigger-mode=ssh_only' matching the answer (never run
-install.sh without that flag), ensure ~/.bashrc sources ~/.bashrc.d/*.sh
-(adding the README's snippet if it doesn't), then verify with
-'tmux-picker --version' and 'tmux-picker --print-trigger-mode'. Report
-success/failure and any manual step still needed (e.g. starting a new SSH
-session or terminal window)."
+codex exec "Before doing anything, ask the user two things and wait for
+both answers — do not guess either: (a) 'Should tmux-picker run on every
+local terminal, or only over SSH?' and (b) 'If tmux or a Rust toolchain is
+missing, OK to install them automatically (may use sudo)?'. Once answered,
+clone https://github.com/jalsarraf0/tmux-picker, follow its README.md to
+build and install tmux-picker via scripts/install.sh, passing
+--trigger-mode=always or --trigger-mode=ssh_only to match (a) and
+--auto-deps or --no-auto-deps to match (b) (never run install.sh without
+both flags), ensure ~/.bashrc sources ~/.bashrc.d/*.sh (adding the
+README's snippet if it doesn't), then verify with 'tmux-picker --version'
+and 'tmux-picker --print-trigger-mode'. Report success/failure and any
+manual step still needed (e.g. starting a new SSH session or terminal
+window)."
 ```
 
 Provided as-is, MIT-licensed, no warranty — see [License](#license). You
 (and whichever agent you delegate to) are responsible for the `trigger_mode`
-you pick and how this ends up configured on your machines.
+and `--auto-deps` choices you make and how this ends up configured on your
+machines.
 
-Either agent should be able to do this unattended in a normal user account —
-the installer only touches `~/.local/bin`, `~/.bashrc.d`, `~/.config/tmux-picker`,
-and (if missing) appends the sourcing snippet to `~/.bashrc`. It never needs
-root and never modifies system files.
+Either agent can do this unattended in a normal user account. With
+`--no-auto-deps` (or when nothing's missing), the installer only touches
+`~/.local/bin`, `~/.bashrc.d`, `~/.config/tmux-picker`, and — if
+missing — appends the sourcing snippet to `~/.bashrc`; it never needs root.
+With `--auto-deps` and something actually missing, it will invoke your
+package manager (via `sudo`, unless already root) to install `tmux`, and/or
+run the official `rustup` installer to get a Rust toolchain — see
+[Missing tmux or cargo?](#missing-tmux-or-cargo---auto-deps) above for
+exactly what that runs.
 
 ## CLI
 
@@ -421,6 +467,14 @@ re-read the config without restarting.
 - **"tmux not found at /usr/bin/tmux"** — the hook hardcodes that path;
   symlink your tmux there or edit `_TMUX` in
   `~/.bashrc.d/tmux-autoattach.sh`.
+- **`install.sh` says cargo/tmux is missing and refuses to proceed** — either
+  install them yourself and re-run, or re-run with
+  `--auto-deps` to have it install them for you (may use `sudo`) — see
+  [Missing tmux or cargo?](#missing-tmux-or-cargo---auto-deps).
+- **`--auto-deps` failed partway through** — it shells out to your real
+  package manager and to `rustup`; check their own error output (printed
+  as-is, not swallowed). Re-running `--auto-deps` is safe — both
+  `dnf`/`apt`/etc. installs and the rustup installer are idempotent.
 - **Picker pegs CPU / won't exit** — this was a real bug (detached-PTY
   wedge) fixed in the commit tagged `fix: detached-pty wedge`; make sure
   you're on a version at or after that fix.

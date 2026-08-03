@@ -159,6 +159,203 @@ else
 fi
 rm -rf "$TH"
 
+# ---------------------------------------------------------------------------
+# --auto-deps / dependency-gate tests.
+#
+# These simulate "cargo missing" / "tmux missing" by shadowing the `command`
+# builtin (exported into the child bash that runs install.sh) rather than
+# touching $PATH — an earlier manual run discovered that fully overriding
+# $PATH to a bare directory hangs in this sandbox, and even a partial
+# override risks a real package manager command slipping through. Where a
+# test needs install.sh to actually reach for sudo/dnf/curl (the --auto-deps
+# dispatch tests), a FAKEBIN dir with mock `sudo` and `curl` is *prepended*
+# to the real $PATH (never replacing it) so nothing here ever touches the
+# host's real packages or a real rustup install.
+# ---------------------------------------------------------------------------
+
+FAKEBIN="$(mktemp -d)"
+cat > "$FAKEBIN/sudo" <<'EOF'
+#!/bin/sh
+echo "FAKE-SUDO-RAN: $*"
+exit 0
+EOF
+cat > "$FAKEBIN/curl" <<'EOF'
+#!/bin/sh
+echo '#!/bin/sh'
+echo 'echo FAKE-RUSTUP-RAN'
+exit 0
+EOF
+chmod +x "$FAKEBIN/sudo" "$FAKEBIN/curl"
+trap 'rm -rf "$FAKEBIN"' EXIT
+
+hide_cargo_tmux() {
+    # $1: "cargo", "tmux", or "both" — which command(s) to make appear missing
+    cat <<EOF
+command() {
+    if [[ "\$1" == "-v" ]]; then
+        case "\$2" in
+EOF
+    case "$1" in
+        cargo) echo '            cargo) return 1 ;;' ;;
+        tmux)  echo '            tmux) return 1 ;;' ;;
+        both)  echo '            cargo|tmux) return 1 ;;' ;;
+    esac
+    cat <<'EOF'
+        esac
+    fi
+    builtin command "$@"
+}
+export -f command
+EOF
+}
+
+# --- Test 8: both missing, --no-auto-deps -> leaves them, dies on cargo ---
+echo "Test 8: --no-auto-deps with cargo+tmux missing dies on cargo"
+TH="$(mktemp -d)"
+out=$(timeout 15 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash -c \
+    "$(hide_cargo_tmux both)"$'\n'"bash '$INSTALL_SH' --no-auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] \
+    && grep -q "missing: a Rust toolchain (cargo), tmux" <<<"$out" \
+    && grep -q "leaving missing dependencies alone" <<<"$out" \
+    && grep -q "cargo not found in PATH" <<<"$out"; then
+    pass "--no-auto-deps reports missing deps then dies on cargo"
+else
+    fail "--no-auto-deps both missing" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 9: only tmux missing, --no-auto-deps -> warns but still installs ---
+echo "Test 9: --no-auto-deps with only tmux missing warns and continues"
+TH="$(mktemp -d)"
+out=$(timeout 60 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash -c \
+    "$(hide_cargo_tmux tmux)"$'\n'"bash '$INSTALL_SH' --no-auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q "tmux not found in PATH (install will continue" <<<"$out" \
+    && [[ -x "$TH/.local/bin/tmux-picker" ]]; then
+    pass "--no-auto-deps warns on tmux-only and still installs"
+else
+    fail "--no-auto-deps tmux-only" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 10: non-interactive, missing deps, no --auto-deps flag -> refuses ---
+echo "Test 10: non-interactive with missing deps and no --auto-deps flag refuses"
+TH="$(mktemp -d)"
+out=$(timeout 15 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash -c \
+    "$(hide_cargo_tmux both)"$'\n'"bash '$INSTALL_SH' --trigger-mode=always </dev/null" 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] \
+    && grep -qi "STOP" <<<"$out" \
+    && grep -qi "ask the person" <<<"$out" \
+    && [[ ! -e "$TH/.local/bin/tmux-picker" ]]; then
+    pass "non-interactive missing-deps refuses and instructs agents to ask first"
+else
+    fail "non-interactive missing-deps refusal" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 11: --auto-deps with tmux missing dispatches through (mocked) sudo ---
+echo "Test 11: --auto-deps with tmux missing calls the package manager"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.cargo"; touch "$TH/.cargo/env"
+out=$(timeout 30 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" PATH="$FAKEBIN:$PATH" bash -c \
+    "$(hide_cargo_tmux tmux)"$'\n'"bash '$INSTALL_SH' --auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] && grep -q "FAKE-SUDO-RAN:.*install -y tmux" <<<"$out"; then
+    pass "--auto-deps dispatches tmux install through the detected package manager"
+else
+    fail "--auto-deps tmux dispatch" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 12: --auto-deps with cargo missing dispatches through (mocked) rustup ---
+echo "Test 12: --auto-deps with cargo missing calls rustup"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.cargo"; touch "$TH/.cargo/env"
+out=$(timeout 30 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" PATH="$FAKEBIN:$PATH" bash -c \
+    "$(hide_cargo_tmux cargo)"$'\n'"bash '$INSTALL_SH' --auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if grep -q "installing a Rust toolchain via rustup" <<<"$out" && grep -q "FAKE-RUSTUP-RAN" <<<"$out"; then
+    pass "--auto-deps dispatches cargo install through rustup"
+else
+    fail "--auto-deps cargo dispatch" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 13: invalid TMUX_PICKER_AUTO_DEPS value is rejected ---
+echo "Test 13: TMUX_PICKER_AUTO_DEPS=bogus is rejected"
+TH="$(mktemp -d)"
+out=$(timeout 15 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" TMUX_PICKER_AUTO_DEPS=bogus bash -c \
+    "$(hide_cargo_tmux both)"$'\n'"bash '$INSTALL_SH' --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "must be 'yes' or 'no'" <<<"$out"; then
+    pass "invalid TMUX_PICKER_AUTO_DEPS value rejected"
+else
+    fail "invalid TMUX_PICKER_AUTO_DEPS" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+# --- Test 14: detect_pm() priority — apt-get wins when present ---
+echo "Test 14: detect_pm prioritises apt-get when present"
+got=$(timeout 5 env PATH="$FAKEBIN:$PATH" bash -c '
+    printf "#!/bin/sh\necho fake-apt\n" > "'"$FAKEBIN"'/apt-get"
+    chmod +x "'"$FAKEBIN"'/apt-get"
+    detect_pm() {
+        if command -v apt-get >/dev/null; then echo apt
+        elif command -v dnf >/dev/null; then echo dnf
+        elif command -v pacman >/dev/null; then echo pacman
+        elif command -v zypper >/dev/null; then echo zypper
+        elif command -v apk >/dev/null; then echo apk
+        elif command -v brew >/dev/null; then echo brew
+        else echo unknown
+        fi
+    }
+    detect_pm
+')
+rm -f "$FAKEBIN/apt-get"
+if [[ "$got" == "apt" ]]; then
+    pass "detect_pm prioritises apt-get over other package managers"
+else
+    fail "detect_pm priority" "got: $got"
+fi
+
+# --- Test 15/16: a failing installer produces a clear die(), not a raw abort ---
+FAILBIN="$(mktemp -d)"
+cat > "$FAILBIN/sudo" <<'EOF'
+#!/bin/sh
+echo "FAKE-SUDO-FAILING: $*" >&2
+exit 1
+EOF
+cat > "$FAILBIN/curl" <<'EOF'
+#!/bin/sh
+echo "FAKE-CURL-FAILING: network unreachable" >&2
+exit 6
+EOF
+chmod +x "$FAILBIN/sudo" "$FAILBIN/curl"
+
+echo "Test 15: a failing package-manager install produces a clear die() message"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.cargo"; touch "$TH/.cargo/env"
+out=$(timeout 20 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" PATH="$FAILBIN:$PATH" bash -c \
+    "$(hide_cargo_tmux tmux)"$'\n'"bash '$INSTALL_SH' --auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "tmux install via .* failed" <<<"$out"; then
+    pass "failing tmux install produces a clear die() message"
+else
+    fail "failing tmux install message" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+echo "Test 16: a failing rustup fetch produces a clear die() message"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.cargo"; touch "$TH/.cargo/env"
+out=$(timeout 20 env HOME="$TH" XDG_CONFIG_HOME="$TH/.config" PATH="$FAILBIN:$PATH" bash -c \
+    "$(hide_cargo_tmux cargo)"$'\n'"bash '$INSTALL_SH' --auto-deps --trigger-mode=always" 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "rustup install failed" <<<"$out"; then
+    pass "failing rustup fetch produces a clear die() message"
+else
+    fail "failing rustup message" "rc=$rc; out=$out"
+fi
+rm -rf "$TH" "$FAILBIN"
+
+rm -rf "$FAKEBIN"
+trap - EXIT
+
 echo ""
 echo "═══ Results: $PASS passed, $FAIL failed ═══"
 [[ $FAIL -eq 0 ]] || exit 1
