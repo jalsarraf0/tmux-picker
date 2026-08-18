@@ -150,13 +150,12 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     let mut config = Config::load();
 
     // Query tmux — single call, no TOCTOU race
-    let mut sessions = match tmux::list_sessions() {
+    let sessions = match tmux::list_sessions_with_markers(&config.markers) {
         Ok(s) if s.is_empty() => return Ok(Action::New("main".into())),
         Ok(s) => s,
         // tmux server not running (e.g. early boot race) — create a session
         Err(_) => return Ok(Action::New("main".into())),
     };
-    tmux::populate_markers(&mut sessions, &config.markers);
 
     // SIGHUP → reload config in place. Best-effort: failure to install
     // the handler is logged but does not abort startup.
@@ -310,14 +309,13 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
         // If the session list went dirty (e.g., post-kill), re-fetch.
         if app.sessions_dirty
-            && let Ok(mut fresh) = tmux::list_sessions()
+            && let Ok(fresh) = tmux::list_sessions_with_markers(&config.markers)
         {
             if fresh.is_empty() {
                 // No sessions left — drop out and let the shell stub create one.
                 app.action = Some(Action::New("main".into()));
                 break;
             }
-            tmux::populate_markers(&mut fresh, &config.markers);
             app.replace_sessions(fresh);
         }
 

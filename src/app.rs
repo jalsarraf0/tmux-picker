@@ -15,11 +15,17 @@ use crate::tmux;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Mode {
+    /// Browse and select sessions.
     Pick,
+    /// Enter a new session name.
     NewInput,
+    /// Type a fuzzy session filter.
     Filter,
+    /// Confirm killing the selected session.
     ConfirmKill,
+    /// Display the help overlay.
     Help,
+    /// Edit the selected session name.
     Rename,
 }
 
@@ -89,6 +95,7 @@ impl PreviewMode {
 // App
 // ---------------------------------------------------------------------------
 
+/// Mutable state for one picker interaction.
 pub struct App {
     pub sessions: Vec<Session>,
     /// Index into `filtered_indices` (which itself indexes into `sessions`).
@@ -229,10 +236,10 @@ impl App {
             }
             SortMode::AttachedFirst => {
                 self.sessions
-                    .sort_by_key(|s| (!s.attached, s.name.to_lowercase()));
+                    .sort_by_cached_key(|s| (!s.attached, s.name.to_lowercase()));
             }
             SortMode::Name => {
-                self.sessions.sort_by_key(|s| s.name.to_lowercase());
+                self.sessions.sort_by_cached_key(|s| s.name.to_lowercase());
             }
             SortMode::IdleLongest => {
                 self.sessions
@@ -939,7 +946,7 @@ mod tests {
             ..Config::default()
         };
         let mut app = App::new(make_sessions(), &cfg);
-        app.tick(Duration::from_secs(3600));
+        app.tick(Duration::from_hours(1));
         assert!(app.action.is_none());
     }
 

@@ -1,8 +1,12 @@
 use std::fmt;
 
+/// Action requested by the picker loop for the shell hook to execute.
 pub enum Action {
+    /// Attach to an existing session.
     Attach(String),
+    /// Create and attach to a new session.
     New(String),
+    /// Return control to the invoking shell.
     Shell,
 }
 

@@ -1,6 +1,7 @@
 //! Per-session metadata stored as tmux user-options.
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
+/// Optional label, project, purpose, and timestamp associated with a session.
 pub struct Metadata {
     pub label: Option<String>,
     pub project: Option<String>,
@@ -95,8 +96,7 @@ pub fn write(session: &str, m: &Metadata) -> Result<(), String> {
     if m.label.is_some() || m.project.is_some() || m.purpose.is_some() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         tmux::set_user_option(session, "tmux_picker_label_at", &now.to_string())?;
     }
     Ok(())
@@ -279,8 +279,7 @@ mod tests {
     fn unique_tempdir(label: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         std::env::temp_dir().join(format!(
             "tmux-picker-{label}-{}-{nanos}",
             std::process::id()

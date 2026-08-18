@@ -51,10 +51,15 @@ pub fn config_file_path() -> Option<std::path::PathBuf> {
 }
 
 #[derive(Debug, Clone)]
+/// Effective picker configuration.
 pub struct Config {
+    /// Seconds before automatic attachment; zero disables it.
     pub timeout_secs: u64,
+    /// Whether the shell hook triggers only for SSH sessions.
     pub trigger_mode: TriggerMode,
+    /// UI colors.
     pub theme: Theme,
+    /// Process-name marker rules.
     pub markers: Markers,
 }
 
@@ -160,9 +165,13 @@ fn pattern_matches(commands_lc: &[String], pattern: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
+/// Colors used by the picker UI.
 pub struct Theme {
+    /// Accent color for selected controls and headings.
     pub accent: Color,
+    /// Warning color for destructive controls.
     pub warning: Color,
+    /// Background color for the selected row.
     pub selection_bg: Color,
 }
 
@@ -555,8 +564,10 @@ mod tests {
 
     #[test]
     fn to_toml_includes_trigger_mode() {
-        let mut cfg = Config::default();
-        cfg.trigger_mode = TriggerMode::SshOnly;
+        let cfg = Config {
+            trigger_mode: TriggerMode::SshOnly,
+            ..Config::default()
+        };
         let s = cfg.to_toml();
         assert!(s.contains("trigger_mode = \"ssh_only\""));
     }

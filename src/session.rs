@@ -6,6 +6,7 @@ use ratatui::style::Color;
 use crate::metadata::Metadata;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
+/// Snapshot of a tmux session used by the picker and renderer.
 pub struct Session {
     pub name: String,
     pub window_count: u32,
@@ -33,7 +34,7 @@ impl Session {
     pub fn activity_display(&self) -> String {
         let secs = self.last_activity.as_secs();
         if secs < 60 {
-            format!("active {}s", secs)
+            format!("active {secs}s")
         } else if secs < 3600 {
             format!("idle {}m", secs / 60)
         } else if secs < 86400 {

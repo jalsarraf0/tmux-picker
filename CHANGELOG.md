@@ -4,6 +4,31 @@ All notable changes to tmux-picker are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions match
 git tags.
 
+## [Unreleased]
+
+Optimization, elegance, and presentation pass — no behavior change.
+
+### Changed
+
+- `list_sessions_with_markers` folds marker discovery into the existing
+  `list-panes` query, removing a second subprocess spawn from every picker
+  refresh tick.
+- Sort paths that key on `name.to_lowercase()` switched from `sort_by_key`
+  to `sort_by_cached_key`, so the lowercasing allocation happens once per
+  element instead of on every comparison.
+- Reduced string clones across `tmux.rs`/`ui.rs` parsing and rendering
+  paths in favor of borrowing.
+- Full `clippy::pedantic` pass: zero warnings on `cargo clippy --all-targets
+  --all-features -- -D warnings`, all fixes applied idiomatically rather
+  than suppressed.
+- Added module- and public-API-level doc comments across `src/`.
+- Added a CI workflow (`.github/workflows/ci.yml`): fmt, clippy, build+test
+  on Linux and macOS, e2e tests, and shellcheck on every push/PR.
+- Rewrote `README.md` for a punchier first screen (tagline, badges, a
+  static TUI preview, a feature/comparison-table lead) and moved the
+  AI-agent install prompts and maintainer release checklist to
+  `docs/AI_AGENT_INSTALL.md` and `docs/RELEASING.md` respectively.
+
 ## [1.2.1] - 2026-08-03
 
 The repo went public today and picked up a full local-terminal auto-attach

@@ -12,6 +12,7 @@ use crate::config::Theme;
 /// Render-time context: theme, future render-only flags. Borrowed so the UI
 /// owns nothing.
 pub struct UiContext<'a> {
+    /// Theme used for this render.
     pub theme: &'a Theme,
 }
 
@@ -52,14 +53,14 @@ fn collapse_home(path: &str) -> String {
     path.to_string()
 }
 
+/// Render the picker into a Ratatui frame.
 pub fn draw(frame: &mut Frame, app: &App, ctx: &UiContext<'_>) {
     let area = frame.area();
 
     let detail_height: u16 = app
         .selected_session()
         .and_then(format_detail_line)
-        .map(|_| 1)
-        .unwrap_or(0);
+        .map_or(0, |_| 1);
 
     let preview_height: u16 = if app.selected_name().is_some() {
         // 5 content rows + 2 border rows; only render if there's room.
@@ -105,7 +106,7 @@ fn draw_preview_summary(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
     let body = match app.preview.as_deref() {
-        Some(text) if !text.is_empty() => text.to_string(),
+        Some(text) if !text.is_empty() => text.to_owned(),
         Some(_) => String::from("(empty)"),
         None => String::from("(unavailable)"),
     };
@@ -262,7 +263,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) 
                     Span::styled(format_name_display(session), name_style),
                     Span::raw(windows),
                     Span::styled(
-                        session.current_command.clone(),
+                        session.current_command.as_str(),
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::styled(attached, Style::default().fg(Color::Green)),
@@ -379,7 +380,7 @@ fn draw_actions(frame: &mut Frame, app: &App, ctx: &UiContext<'_>, area: Rect) {
                     Style::default().fg(warning).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    target.to_string(),
+                    target,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -701,7 +702,7 @@ mod tests {
         let theme = crate::config::Theme::default();
         let ctx = UiContext { theme: &theme };
         let joined = help_overlay_lines(&ctx).join("\n");
-        assert!(joined.contains("?"));
+        assert!(joined.contains('?'));
         assert!(joined.contains("show this help"));
     }
 
@@ -724,7 +725,11 @@ mod tests {
         // The overlay should have rendered the title and at least one of
         // the section headers somewhere on the buffer.
         let buffer = terminal.backend().buffer().clone();
-        let dump: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        let dump: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(dump.contains("help"));
         assert!(dump.contains("Pick mode"));
     }
@@ -738,6 +743,8 @@ mod tests {
     fn filtered_table_renders_only_matching_rows() {
         use crate::app::App;
         use crate::config::Config;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let sessions = vec![
             make_session("alpha", None),
@@ -756,15 +763,17 @@ mod tests {
         // Render a frame and confirm the buffer contains "beta" but not
         // "alpha" / "gamma" — those should be filtered out, not just hidden
         // behind the highlight.
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
         let theme = crate::config::Theme::default();
         let ctx = UiContext { theme: &theme };
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &app, &ctx)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let dump: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        let dump: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(dump.contains("beta"));
         assert!(!dump.contains("alpha"));
         assert!(!dump.contains("gamma"));

@@ -82,14 +82,12 @@ fn run_tmux(args: &[&str]) -> Result<String, String> {
 pub fn parse_pane_commands(output: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in output.lines() {
-        let parts: Vec<&str> = line.splitn(4, '|').collect();
-        if parts.len() < 4 {
+        let mut fields = line.splitn(4, '|');
+        let (Some(session_name), Some(window_active), Some(pane_active), Some(command)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
             continue;
-        }
-        let session_name = parts[0];
-        let window_active = parts[1];
-        let pane_active = parts[2];
-        let command = parts[3];
+        };
 
         if window_active == "1" && pane_active == "1" {
             map.insert(session_name.to_string(), command.to_string());
@@ -104,13 +102,15 @@ pub fn parse_pane_commands(output: &str) -> HashMap<String, String> {
 pub fn parse_all_pane_commands(output: &str) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for line in output.lines() {
-        let parts: Vec<&str> = line.splitn(4, '|').collect();
-        if parts.len() < 4 {
+        let mut fields = line.splitn(4, '|');
+        let (Some(session_name), Some(_window_active), Some(_pane_active), Some(command)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
             continue;
-        }
-        let session_name = parts[0].to_string();
-        let command = parts[3].to_string();
-        map.entry(session_name).or_default().push(command);
+        };
+        map.entry(session_name.to_owned())
+            .or_default()
+            .push(command.to_owned());
     }
     map
 }
@@ -127,19 +127,20 @@ pub fn parse_session_line(
     now_epoch: u64,
     commands: &HashMap<String, String>,
 ) -> Option<Session> {
-    let parts: Vec<&str> = line.splitn(8, '|').collect();
-    if parts.len() < 4 {
+    let mut fields = line.splitn(8, '|');
+    let (Some(name), Some(window_count), Some(attached), Some(activity)) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
         return None;
-    }
-
-    let name = parts[0].to_string();
+    };
+    let name = name.to_owned();
     if name.is_empty() {
         return None;
     }
 
-    let window_count: u32 = parts[1].parse().unwrap_or(0);
-    let attached: bool = parts[2] == "1";
-    let last_activity = match parts[3].parse::<u64>() {
+    let window_count: u32 = window_count.parse().unwrap_or(0);
+    let attached: bool = attached == "1";
+    let last_activity = match activity.parse::<u64>() {
         Ok(activity_epoch) if now_epoch >= activity_epoch => {
             Duration::from_secs(now_epoch - activity_epoch)
         }
@@ -152,11 +153,13 @@ pub fn parse_session_line(
         .cloned()
         .unwrap_or_else(|| "?".to_string());
 
-    let metadata = if parts.len() >= 8 {
-        let label = nonempty(parts[4]);
-        let project = nonempty(parts[5]);
-        let purpose = nonempty(parts[6]);
-        let label_at = parts[7].parse::<u64>().ok();
+    let metadata = if let (Some(label), Some(project), Some(purpose), Some(label_at)) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    {
+        let label = nonempty(label);
+        let project = nonempty(project);
+        let purpose = nonempty(purpose);
+        let label_at = label_at.parse::<u64>().ok();
         let m = crate::metadata::Metadata {
             label,
             project,
@@ -194,6 +197,18 @@ fn nonempty(s: &str) -> Option<String> {
 /// Query the tmux server for all sessions and return them sorted.
 /// Returns Err if the tmux server is not running or unreachable.
 pub fn list_sessions() -> Result<Vec<Session>, String> {
+    list_sessions_impl(None)
+}
+
+/// Query all sessions and apply marker detection using the same pane query.
+/// This avoids a second `list-panes` subprocess during picker refreshes.
+pub fn list_sessions_with_markers(
+    markers: &crate::config::Markers,
+) -> Result<Vec<Session>, String> {
+    list_sessions_impl(Some(markers))
+}
+
+fn list_sessions_impl(markers: Option<&crate::config::Markers>) -> Result<Vec<Session>, String> {
     // Collect pane commands first (best-effort; ignore errors).
     let pane_output = run_tmux(&[
         "list-panes",
@@ -203,6 +218,7 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
     ])
     .unwrap_or_default();
     let commands = parse_pane_commands(&pane_output);
+    let all_commands = markers.map(|_| parse_all_pane_commands(&pane_output));
 
     // Query sessions (8-field format includes user-options for metadata).
     let session_output = run_tmux(&[
@@ -220,6 +236,14 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
         .lines()
         .filter_map(|line| parse_session_line(line, now_epoch, &commands))
         .collect();
+
+    if let (Some(markers), Some(all_commands)) = (markers, all_commands.as_ref()) {
+        for session in &mut sessions {
+            if let Some(commands) = all_commands.get(&session.name) {
+                session.marker = markers.lookup(commands);
+            }
+        }
+    }
 
     sessions.sort();
     Ok(sessions)
@@ -247,7 +271,9 @@ pub fn populate_markers(sessions: &mut [Session], markers: &crate::config::Marke
 /// Per-window snapshot for the multi-window preview mode.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct WindowSnapshot {
+    /// Window name.
     pub name: String,
+    /// Last non-blank line captured from its active pane.
     pub last_line: String,
 }
 
@@ -270,11 +296,13 @@ pub fn list_windows(session: &str, max: usize) -> Result<Vec<WindowSnapshot>, St
     let entries: Vec<(String, String)> = raw
         .lines()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(3, '|').collect();
-            if parts.len() < 3 {
+            let mut fields = line.splitn(3, '|');
+            let (Some(name), Some(_active), Some(pane_id)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
                 return None;
-            }
-            Some((parts[0].to_string(), parts[2].to_string()))
+            };
+            Some((name.to_owned(), pane_id.to_owned()))
         })
         .collect();
 

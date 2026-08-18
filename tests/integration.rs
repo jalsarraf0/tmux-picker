@@ -147,9 +147,8 @@ fn test_parse_real_tmux_sessions() {
     assert_eq!(
         lines.len(),
         3,
-        "expected 3 session lines, got {}; output:\n{}",
+        "expected 3 session lines, got {}; output:\n{stdout}",
         lines.len(),
-        stdout
     );
 
     for line in &lines {
@@ -157,20 +156,17 @@ fn test_parse_real_tmux_sessions() {
         assert_eq!(
             parts.len(),
             4,
-            "expected 4 pipe-separated fields in line {:?}",
-            line
+            "expected 4 pipe-separated fields in line {line:?}",
         );
 
         // Field [1] is the window count — must parse as a non-negative integer.
         let window_count: u32 = parts[1]
             .parse()
-            .unwrap_or_else(|_| panic!("window count is not numeric in line {:?}", line));
+            .unwrap_or_else(|_| panic!("window count is not numeric in line {line:?}"));
         // A freshly created session has at least 1 window.
         assert!(
             window_count >= 1,
-            "expected window_count >= 1, got {} in line {:?}",
-            window_count,
-            line
+            "expected window_count >= 1, got {window_count} in line {line:?}",
         );
     }
 
@@ -204,8 +200,7 @@ fn test_parse_real_pane_commands() {
 
     assert!(
         !lines.is_empty(),
-        "expected at least one pane line; output:\n{}",
-        stdout
+        "expected at least one pane line; output:\n{stdout}",
     );
 
     for line in &lines {
@@ -213,13 +208,11 @@ fn test_parse_real_pane_commands() {
         assert_eq!(
             parts.len(),
             4,
-            "expected 4 pipe-separated fields in pane line {:?}",
-            line
+            "expected 4 pipe-separated fields in pane line {line:?}",
         );
         assert!(
             !parts[0].is_empty(),
-            "session_name field must not be empty in line {:?}",
-            line
+            "session_name field must not be empty in line {line:?}",
         );
     }
 
@@ -233,7 +226,7 @@ fn test_many_sessions() {
     setup();
 
     for i in 0..20 {
-        create_session(&format!("sess-{:02}", i));
+        create_session(&format!("sess-{i:02}"));
     }
 
     let output = tmux_cmd(&["list-sessions", "-F", "#{session_name}"]);
@@ -289,9 +282,7 @@ fn test_session_with_special_names() {
     for name in &names {
         assert!(
             stdout.lines().any(|l| l == *name),
-            "expected session name {:?} to appear in list-sessions output:\n{}",
-            name,
-            stdout
+            "expected session name {name:?} to appear in list-sessions output:\n{stdout}",
         );
     }
 

@@ -64,7 +64,7 @@ pub fn handle_pick_key(app: &mut App, key: KeyEvent) {
 pub fn handle_help_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_help(),
-        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => app.cancel_help(),
+        KeyCode::Esc | KeyCode::Char('?' | 'q') => app.cancel_help(),
         _ => {}
     }
 }
@@ -104,7 +104,7 @@ pub fn handle_filter_key(app: &mut App, key: KeyEvent) {
 /// Key handler for ConfirmKill mode. `y`/`Y` confirms; anything else cancels.
 pub fn handle_confirm_kill_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_kill(),
+        KeyCode::Char('y' | 'Y') => app.confirm_kill(),
         _ => app.cancel_kill(),
     }
 }
