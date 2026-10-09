@@ -47,6 +47,26 @@ dashboard, and every tmux round trip on the login path got cheaper.
   command separator, so `label --purpose "fix;"` stored `fix`. Values are
   escaped now.
 - Window names containing `|` no longer break the windows view.
+- **Dropped input**: when one read from the terminal held several events
+  (a double-click, a paste, fast typing over SSH), only the first was
+  handled until the next keypress; `/gamma` typed quickly filtered on `g`.
+  The loop now drains every queued event, pausing only to re-fetch the list
+  after a kill or rename.
+- **tmux 3.4** (Ubuntu 24.04) octal-escapes control characters in `-p`
+  output; chained-command separators are printable now, so the startup
+  query works there.
+
+#### Tests
+
+- `tests/tui_e2e.sh`: 46 end-to-end checks that run the release binary in
+  a real terminal (a private tmux server) and drive it with keys, mouse
+  sequences, signals and resizes: every exit path, sorting, digit and
+  arrow navigation, filtering, new/kill/rename against a live tmux, help
+  and windows views, the live feed, double-click and wheel, auto-attach,
+  SIGHUP reload, hangup, resizes, 256-colour mode, idle CPU, and the login
+  hook attaching for real.
+- CI installs tmux before running the tests (macOS integration tests had
+  never run), the tests find tmux on PATH, and CI runs the TUI suite.
 
 #### Performance
 

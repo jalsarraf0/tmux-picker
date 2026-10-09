@@ -34,7 +34,15 @@ fn serial_lock() -> MutexGuard<'static, ()> {
     }
 }
 
-const TMUX: &str = "/usr/bin/tmux";
+/// The tmux the picker itself uses: /usr/bin/tmux when present, else the
+/// one on PATH (Homebrew on macOS).
+fn tmux_bin() -> &'static str {
+    if std::path::Path::new("/usr/bin/tmux").exists() {
+        "/usr/bin/tmux"
+    } else {
+        "tmux"
+    }
+}
 const SOCKET: &str = "tmux-picker-test";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +50,7 @@ const SOCKET: &str = "tmux-picker-test";
 // ---------------------------------------------------------------------------
 
 fn tmux_cmd(args: &[&str]) -> std::process::Output {
-    Command::new(TMUX)
+    Command::new(tmux_bin())
         .args(["-L", SOCKET])
         .args(args)
         .output()
@@ -85,14 +93,14 @@ fn run_binary(args: &[&str]) -> std::process::Output {
 const IT_PREFIX: &str = "tmuxpicker-it-";
 
 fn cleanup_it_sessions() {
-    let out = Command::new(TMUX)
+    let out = Command::new(tmux_bin())
         .args(["list-sessions", "-F", "#{session_name}"])
         .output();
     if let Ok(out) = out {
         let stdout = String::from_utf8_lossy(&out.stdout);
         for line in stdout.lines() {
             if line.starts_with(IT_PREFIX) {
-                let _ = Command::new(TMUX)
+                let _ = Command::new(tmux_bin())
                     .args(["kill-session", "-t", line])
                     .output();
             }
@@ -101,14 +109,14 @@ fn cleanup_it_sessions() {
 }
 
 fn create_default_socket_session(name: &str) {
-    let _ = Command::new(TMUX)
+    let _ = Command::new(tmux_bin())
         .args(["new-session", "-d", "-s", name])
         .output();
     thread::sleep(Duration::from_millis(50));
 }
 
 fn create_default_socket_session_in(name: &str, cwd: &str) {
-    let _ = Command::new(TMUX)
+    let _ = Command::new(tmux_bin())
         .args(["new-session", "-d", "-s", name, "-c", cwd])
         .output();
     thread::sleep(Duration::from_millis(50));
@@ -412,18 +420,18 @@ fn test_rename_session_round_trip() {
 
     tmux_picker::tmux::rename_session(&old, &new).expect("rename should succeed");
 
-    let has_old = Command::new(TMUX)
+    let has_old = Command::new(tmux_bin())
         .args(["has-session", "-t", &old])
         .status()
         .expect("has-session");
-    let has_new = Command::new(TMUX)
+    let has_new = Command::new(tmux_bin())
         .args(["has-session", "-t", &new])
         .status()
         .expect("has-session");
     assert!(!has_old.success(), "old name should be gone after rename");
     assert!(has_new.success(), "new name should exist after rename");
 
-    let _ = Command::new(TMUX)
+    let _ = Command::new(tmux_bin())
         .args(["kill-session", "-t", &new])
         .status();
     cleanup_it_sessions();
@@ -457,7 +465,7 @@ fn test_kill_session_removes_it() {
     create_default_socket_session(&sess);
 
     // Verify it exists.
-    let before = Command::new(TMUX)
+    let before = Command::new(tmux_bin())
         .args(["has-session", "-t", &sess])
         .status()
         .expect("has-session");
@@ -465,13 +473,13 @@ fn test_kill_session_removes_it() {
 
     // Kill via the binary's tmux::kill_session path: easiest is calling tmux
     // directly because we don't expose kill via subcommand.
-    let killed = Command::new(TMUX)
+    let killed = Command::new(tmux_bin())
         .args(["kill-session", "-t", &sess])
         .status()
         .expect("kill-session");
     assert!(killed.success());
 
-    let after = Command::new(TMUX)
+    let after = Command::new(tmux_bin())
         .args(["has-session", "-t", &sess])
         .status()
         .expect("has-session");
@@ -489,7 +497,7 @@ fn test_pane_capture_returns_buffer_text() {
     create_default_socket_session(&sess);
 
     // Send a unique line into the pane and wait for it to render.
-    let _ = Command::new(TMUX)
+    let _ = Command::new(tmux_bin())
         .args([
             "send-keys",
             "-t",
@@ -511,7 +519,7 @@ fn test_pane_capture_returns_buffer_text() {
     let target = format!("={sess}:");
     let mut text = String::new();
     for _ in 0..50 {
-        let cap = Command::new(TMUX)
+        let cap = Command::new(tmux_bin())
             .args(["capture-pane", "-t", &target, "-p", "-J", "-S", "-6"])
             .output()
             .expect("capture-pane");
@@ -551,7 +559,15 @@ fn test_auto_uses_pane_cwd() {
         toml.contains(&format!("project = \"{crate_root}\"")),
         "got: {toml}"
     );
-    assert!(toml.contains("label = \"tmux-picker\""), "got: {toml}");
+    // The label is the checkout directory's name (normally "tmux-picker").
+    let dir_name = std::path::Path::new(crate_root)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    assert!(
+        toml.contains(&format!("label = \"{dir_name}\"")),
+        "got: {toml}"
+    );
 
     cleanup_it_sessions();
 }

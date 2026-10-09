@@ -210,6 +210,8 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     // and every tick redraws, so the countdown, clock and effects advance
     // without busy-looping.
     let mut spin_guard_count: u32 = 0;
+    // Input events crossterm already holds that still need handling.
+    let mut pending_input = false;
     loop {
         if !stderr().is_terminal() || !stdin().is_terminal() || !stdin_alive() {
             // TTY went away. Drop out cleanly — caller will respawn on next login.
@@ -217,7 +219,11 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
         }
         let area = terminal.draw(|f| view.draw(f, &app))?.area;
 
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        let timeout = if pending_input {
+            Duration::ZERO
+        } else {
+            tick_rate.saturating_sub(last_tick.elapsed())
+        };
         let poll_started = Instant::now();
 
         // Poll stdin ourselves rather than letting crossterm do it. Crossterm
@@ -244,33 +250,25 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
         }
         let stdin_ready = pres > 0 && (pfd.revents & libc::POLLIN) != 0;
 
-        if stdin_ready && event::poll(Duration::from_millis(0))? {
+        let had_pending = std::mem::take(&mut pending_input);
+        if (stdin_ready || had_pending) && event::poll(Duration::ZERO)? {
             spin_guard_count = 0;
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    input::handle_key(&mut app, key);
-                    if let Some(target) = app.take_pending_kill()
-                        && let Err(e) = tmux::kill_session(&target)
-                    {
-                        app.set_flash(format!("kill failed: {e}"));
-                    }
-                    if let Some((old, new)) = app.take_pending_rename()
-                        && let Err(e) = tmux::rename_session(&old, &new)
-                    {
-                        app.set_flash(format!("rename failed: {e}"));
-                    }
+            // One read from the tty can hold several events (a double-click,
+            // a paste, keys typed during a slow frame). Crossterm queues the
+            // extras internally and stdin will not poll readable for them
+            // again, so drain the queue now.
+            for handled in 1..=MAX_EVENTS_PER_WAKE {
+                handle_event(&mut app, &view, area, event::read()?);
+                if app.should_quit() || !event::poll(Duration::ZERO)? {
+                    break;
                 }
-                Event::Mouse(m) if matches!(app.mode, Mode::Pick | Mode::Filter) => match m.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(row) = view.session_at(&app, area, m.column, m.row) {
-                            app.handle_mouse_click(row, Instant::now());
-                        }
-                    }
-                    MouseEventKind::ScrollUp => app.move_up(),
-                    MouseEventKind::ScrollDown => app.move_down(),
-                    _ => {}
-                },
-                _ => {}
+                // More is queued. After a kill/rename, let the loop re-fetch
+                // the list before later keys act on it (and cap a flood);
+                // the next pass resumes without waiting for new input.
+                if app.sessions_dirty || handled == MAX_EVENTS_PER_WAKE {
+                    pending_input = true;
+                    break;
+                }
             }
             // Fetch the new selection's preview now rather than on the next
             // tick, so moving never flashes an empty feed.
@@ -343,6 +341,41 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
 
     // _guard Drop handles terminal cleanup
     Ok(app.action.unwrap_or(Action::Shell))
+}
+
+/// Upper bound on queued input events handled per wake-up.
+const MAX_EVENTS_PER_WAKE: usize = 256;
+
+/// Apply one input event: keys go through the mode dispatcher (then any
+/// staged kill/rename runs against tmux); clicks and the wheel move the
+/// selection in Pick and Filter mode.
+fn handle_event(app: &mut App, view: &ui::Ui, area: ratatui::layout::Rect, ev: Event) {
+    match ev {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            input::handle_key(app, key);
+            if let Some(target) = app.take_pending_kill()
+                && let Err(e) = tmux::kill_session(&target)
+            {
+                app.set_flash(format!("kill failed: {e}"));
+            }
+            if let Some((old, new)) = app.take_pending_rename()
+                && let Err(e) = tmux::rename_session(&old, &new)
+            {
+                app.set_flash(format!("rename failed: {e}"));
+            }
+        }
+        Event::Mouse(m) if matches!(app.mode, Mode::Pick | Mode::Filter) => match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(row) = view.session_at(app, area, m.column, m.row) {
+                    app.handle_mouse_click(row, Instant::now());
+                }
+            }
+            MouseEventKind::ScrollUp => app.move_up(),
+            MouseEventKind::ScrollDown => app.move_down(),
+            _ => {}
+        },
+        _ => {}
+    }
 }
 
 /// If the preview cache is missing, belongs to another session, or is older

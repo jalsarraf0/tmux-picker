@@ -343,9 +343,10 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 bash tests/e2e.sh
+bash tests/tui_e2e.sh      # drives the real TUI inside a private tmux server
 ```
 
-CI runs all four on every push/PR (`.github/workflows/ci.yml`). Maintainer
+CI runs all five on every push/PR (`.github/workflows/ci.yml`). Maintainer
 release checklist: [docs/RELEASING.md](docs/RELEASING.md).
 
 ## License

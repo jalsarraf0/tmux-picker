@@ -42,8 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --verbose
-      - run: cargo test --release --verbose
+      # Integration and E2E tests drive a real tmux, so install it first.
       - name: Install tmux
         run: |
           if command -v apt-get >/dev/null; then
@@ -51,8 +50,13 @@ jobs:
           elif command -v brew >/dev/null; then
             brew install tmux
           fi
+          tmux -V
+      - run: cargo build --release --verbose
+      - run: cargo test --release --verbose
       - name: End-to-end tests
         run: bash tests/e2e.sh
+      - name: TUI end-to-end tests
+        run: bash tests/tui_e2e.sh
 
   shellcheck:
     name: shellcheck

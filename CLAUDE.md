@@ -9,6 +9,7 @@ cargo build --release
 ## Test
 cargo test
 bash tests/e2e.sh
+bash tests/tui_e2e.sh
 
 ## Lint
 cargo fmt --check && cargo clippy -- -D warnings

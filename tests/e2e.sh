@@ -6,7 +6,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 BINARY="$TARGET_DIR/release/tmux-picker"
 SOCKET="tmux-picker-e2e"
+# The tmux the picker itself uses: /usr/bin/tmux when present, else PATH.
 TMUX_BIN="/usr/bin/tmux"
+[[ -x "$TMUX_BIN" ]] || TMUX_BIN="$(command -v tmux)"
 PASS=0
 FAIL=0
 
@@ -177,7 +179,7 @@ echo "Test 12: --version exits 0"
 # --- Test 13: label/show round-trip on default socket ---
 echo "Test 13: label/show round-trip"
 SESS="e2e-label-$$"
-/usr/bin/tmux new-session -d -s "$SESS" 2>/dev/null
+"$TMUX_BIN" new-session -d -s "$SESS" 2>/dev/null
 sleep 0.1
 "$BINARY" label "$SESS" --label "e2e test" >/dev/null 2>&1
 out=$("$BINARY" show "$SESS" 2>/dev/null)
@@ -186,7 +188,7 @@ if grep -q 'label = "e2e test"' <<<"$out"; then
 else
     fail "label/show round-trip" "got: $out"
 fi
-/usr/bin/tmux kill-session -t "$SESS" 2>/dev/null
+"$TMUX_BIN" kill-session -t "$SESS" 2>/dev/null
 
 # --- Test 14: --check-config with no file ---
 echo "Test 14: --check-config with no config file"
@@ -279,10 +281,10 @@ STUB_HOME="$(mktemp -d)"
 mkdir -p "$STUB_HOME/git/$SESS"
 # Spawn the session with -c so its pane cwd sits at $STUB_HOME (no .git
 # anywhere up the tree). The fallback then resolves to $STUB_HOME/git/<sess>.
-if /usr/bin/tmux new-session -d -s "$SESS" -c "$STUB_HOME" 2>/dev/null; then
+if "$TMUX_BIN" new-session -d -s "$SESS" -c "$STUB_HOME" 2>/dev/null; then
     HOME="$STUB_HOME" "$BINARY" auto "$SESS" >/dev/null 2>&1
     out=$(HOME="$STUB_HOME" "$BINARY" show "$SESS" 2>/dev/null)
-    /usr/bin/tmux kill-session -t "$SESS" 2>/dev/null || true
+    "$TMUX_BIN" kill-session -t "$SESS" 2>/dev/null || true
     if grep -q "project = \"$STUB_HOME/git/$SESS\"" <<<"$out" \
         && grep -q "label = \"$SESS\"" <<<"$out"; then
         pass "auto-label uses ~/git fallback"
