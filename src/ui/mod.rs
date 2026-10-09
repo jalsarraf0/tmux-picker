@@ -1332,6 +1332,7 @@ mod tests {
     fn frozen(theme: &Theme, truecolor: bool) -> Ui {
         let mut ui = Ui::with_palette(Palette::with_truecolor(theme, truecolor));
         ui.clock = || String::from("12:00:00");
+        ui.who = String::from("op@grid");
         ui
     }
 

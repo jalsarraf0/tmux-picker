@@ -11,9 +11,10 @@ use crate::session::Session;
 
 const TMUX_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Line printed between the outputs of chained commands. Contains no `|`,
-/// so it can never be mistaken for a pane/session/window line.
-const SEP: &str = "\u{1e}tmux-picker\u{1e}";
+/// Line printed between the outputs of chained commands. Printable ASCII
+/// only: tmux 3.4 octal-escapes control characters in `-p` output. Contains
+/// no `|`, so it can never be mistaken for a pane/session/window line.
+const SEP: &str = "::tmux-picker-sep::";
 
 /// `#{session_name}|…` per pane, shared by the session and marker queries.
 const PANE_FORMAT: &str = "#{session_name}|#{window_active}|#{pane_active}|#{pane_current_command}";
@@ -445,12 +446,13 @@ pub fn list_windows(session: &str, max: usize) -> Result<Vec<WindowSnapshot>, St
         "-t",
         &session_target(session),
         "-F",
-        "#{window_index}\u{1f}#{window_active}\u{1f}#{pane_id}\u{1f}#{window_name}",
+        "#{window_index}|#{window_active}|#{pane_id}|#{window_name}",
     ])?;
     let entries: Vec<(Option<u32>, bool, &str, &str)> = raw
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(4, '\u{1f}');
+            // The name comes last, so a `|` inside it stays in the name.
+            let mut fields = line.splitn(4, '|');
             let (Some(index), Some(active), Some(pane_id), Some(name)) =
                 (fields.next(), fields.next(), fields.next(), fields.next())
             else {
@@ -565,25 +567,27 @@ pub fn get_user_option(session: &str, key: &str) -> Option<String> {
 /// tmux process. Errs with "session '…' does not exist" when there is no
 /// session with exactly that name.
 pub fn display(session: &str, formats: &[&str]) -> Result<Vec<String>, String> {
-    let mut format = String::from("#{session_name}");
-    for f in formats {
-        format.push('\u{1f}');
-        format.push_str(f);
-    }
-    let out = run_tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &pane_target(session),
-        &format,
-    ])?;
-    let mut fields = out.trim_end_matches('\n').split('\u{1f}');
+    let target = pane_target(session);
+    let commands: Vec<[&str; 5]> = std::iter::once("#{session_name}")
+        .chain(formats.iter().copied())
+        .map(|f| ["display-message", "-p", "-t", target.as_str(), f])
+        .collect();
+    let refs: Vec<&[&str]> = commands.iter().map(<[&str; 5]>::as_slice).collect();
+    let out = exec_tmux(&chain(&refs))?;
+    let mut values = split_chained(&out.stdout)
+        .into_iter()
+        .map(|chunk| chunk.strip_suffix('\n').unwrap_or(chunk).to_owned());
     // display-message does not fail on a missing target; it expands to
     // empty strings instead, so check the name came back.
-    if fields.next() != Some(session) {
-        return Err(format!("session '{session}' does not exist"));
+    if values.next().as_deref() != Some(session) {
+        let err = out.stderr.trim_end();
+        return Err(if err.is_empty() || err.contains("can't find") {
+            format!("session '{session}' does not exist")
+        } else {
+            err.to_string()
+        });
     }
-    let values: Vec<String> = fields.map(str::to_owned).collect();
+    let values: Vec<String> = values.collect();
     if values.len() == formats.len() {
         Ok(values)
     } else {
