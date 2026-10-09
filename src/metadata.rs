@@ -288,10 +288,18 @@ mod tests {
 
     #[test]
     fn walk_up_finds_repo_root() {
-        let crate_root = env!("CARGO_MANIFEST_DIR");
-        let started_in = format!("{crate_root}/src");
-        let found = walk_up_to_git_root(&started_in).unwrap();
-        assert_eq!(found, crate_root);
+        // A repo of its own, so the test also passes from a source tarball
+        // or any other copy of the crate that has no .git.
+        let tmp = unique_tempdir("walk");
+        let repo = tmp.join("repo");
+        let deep = repo.join("src").join("ui");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+
+        let found = walk_up_to_git_root(deep.to_str().unwrap());
+        assert_eq!(found.as_deref(), repo.to_str());
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
