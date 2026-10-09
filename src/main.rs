@@ -15,8 +15,6 @@ use tmux_picker::cli::{Cli, Command};
 use tmux_picker::config::Config;
 use tmux_picker::{input, metadata, tmux, ui};
 
-const TICK_RATE: Duration = Duration::from_millis(250);
-
 /// RAII guard that restores the terminal on drop — even on panic or early error.
 struct TerminalGuard;
 
@@ -174,6 +172,9 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(sessions, &config);
+    let mut view = ui::Ui::new(&config.theme);
+    // Effects redraw at 10 fps; without them the loop ticks at 4 Hz.
+    let mut tick_rate = view.frame_interval();
     let mut last_tick = Instant::now();
     refresh_preview_if_needed(&mut app);
 
@@ -204,17 +205,19 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     //
     // 3. Spin guard: belt-and-suspenders for the older `Ok(false)` fast-
     //    return mode in case crossterm or mio behavior changes.
+    //
+    // Frame pacing: the poll timeout is the time left until the next tick,
+    // and every tick redraws, so the countdown, clock and effects advance
+    // without busy-looping.
     let mut spin_guard_count: u32 = 0;
     loop {
         if !stderr().is_terminal() || !stdin().is_terminal() || !stdin_alive() {
             // TTY went away. Drop out cleanly — caller will respawn on next login.
             return Ok(Action::Shell);
         }
-        let theme = config.theme.clone();
-        let ui_ctx = ui::UiContext { theme: &theme };
-        terminal.draw(|f| ui::draw(f, &app, &ui_ctx))?;
+        let area = terminal.draw(|f| view.draw(f, &app))?.area;
 
-        let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         let poll_started = Instant::now();
 
         // Poll stdin ourselves rather than letting crossterm do it. Crossterm
@@ -257,21 +260,26 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
                         app.set_flash(format!("rename failed: {e}"));
                     }
                 }
-                Event::Mouse(m) => {
-                    if matches!(app.mode, Mode::Pick | Mode::Filter)
-                        && let MouseEventKind::Down(MouseButton::Left) = m.kind
-                        && let Some(row) = ui::row_for_y(m.row)
-                    {
-                        app.handle_mouse_click(row, Instant::now());
+                Event::Mouse(m) if matches!(app.mode, Mode::Pick | Mode::Filter) => match m.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(row) = view.session_at(&app, area, m.column, m.row) {
+                            app.handle_mouse_click(row, Instant::now());
+                        }
                     }
-                }
+                    MouseEventKind::ScrollUp => app.move_up(),
+                    MouseEventKind::ScrollDown => app.move_down(),
+                    _ => {}
+                },
                 _ => {}
             }
+            // Fetch the new selection's preview now rather than on the next
+            // tick, so moving never flashes an empty feed.
+            refresh_preview_if_needed(&mut app);
         } else {
             // Either libc::poll timed out (healthy idle), or it returned
             // POLLIN but crossterm had no decoded event yet. Belt-and-
             // suspenders spin guard: if the iter came back faster than
-            // 10ms while we asked for up to TICK_RATE (250ms), something
+            // 10ms while we asked for up to a full tick (100-250ms), something
             // upstream is broken — count consecutive fast empties and
             // bail at 500 (~3s of broken-loop time at ~5ms/iter). Healthy
             // slow returns reset the counter; monotonic counting can't
@@ -290,10 +298,13 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
             let (new_cfg, warnings) = Config::load_with_warnings();
             app.timeout_secs = new_cfg.timeout_secs;
             config = new_cfg;
+            view.set_theme(&config.theme);
+            tick_rate = view.frame_interval();
             tmux::populate_markers(&mut app.sessions, &config.markers);
             app.preview = None;
             app.preview_for = None;
             app.preview_windows = None;
+            app.preview_at = None;
             if warnings.is_empty() {
                 app.set_flash("[config reloaded]".into());
             } else {
@@ -319,7 +330,7 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
             app.replace_sessions(fresh);
         }
 
-        if last_tick.elapsed() >= TICK_RATE {
+        if last_tick.elapsed() >= tick_rate {
             app.tick(last_tick.elapsed());
             refresh_preview_if_needed(&mut app);
             last_tick = Instant::now();
@@ -334,33 +345,34 @@ fn picker_loop() -> Result<Action, Box<dyn std::error::Error>> {
     Ok(app.action.unwrap_or(Action::Shell))
 }
 
-/// If the preview cache is missing or stale, fetch a fresh one for the
-/// currently-selected session. On capture failure we cache None so the UI
-/// renders "(unavailable)" without re-trying every tick. Honours
+/// If the preview cache is missing, belongs to another session, or is older
+/// than `PREVIEW_REFRESH`, fetch a fresh one for the selected session, so
+/// the feed follows a busy pane live. On capture failure we cache None so
+/// the UI renders "no signal" without re-trying every frame. Honours
 /// `app.preview_mode`: Summary uses pane_capture, WindowsList uses
 /// list_windows.
 fn refresh_preview_if_needed(app: &mut App) {
+    if !app.preview_needs_refresh(Instant::now()) {
+        return;
+    }
     let Some(name) = app.selected_name().map(String::from) else {
         return;
     };
     match app.preview_mode {
         tmux_picker::app::PreviewMode::Summary => {
-            if app.preview.is_some() && app.preview_is_current() {
-                return;
-            }
-            let captured = tmux::pane_capture(&name, 6).ok();
+            let captured = tmux::pane_capture(&name, PREVIEW_LINES).ok();
             app.set_preview(captured);
         }
         tmux_picker::app::PreviewMode::WindowsList => {
-            if app.preview_windows.is_some() && app.preview_is_current() {
-                return;
-            }
-            let snaps = tmux::list_windows(&name, 8).ok();
-            app.preview_windows = snaps;
-            app.preview_for = Some(name);
+            let snaps = tmux::list_windows(&name, 12).ok();
+            app.set_preview_windows(snaps);
         }
     }
 }
+
+/// Pane lines kept per capture: more than any preview box shows, so a tall
+/// or side-by-side feed fills up.
+const PREVIEW_LINES: u16 = 48;
 
 // ---------------------------------------------------------------------------
 // label / show / auto

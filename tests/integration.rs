@@ -506,11 +506,21 @@ fn test_pane_capture_returns_buffer_text() {
     // we test the tmux command directly to verify the format matches.
     assert!(out.status.success());
 
-    let cap = Command::new(TMUX)
-        .args(["capture-pane", "-t", &sess, "-p", "-J", "-S", "-6"])
-        .output()
-        .expect("capture-pane");
-    let text = String::from_utf8_lossy(&cap.stdout);
+    // The pane's shell may still be starting up (rc files can print a lot),
+    // so poll for the marker instead of trusting a fixed sleep.
+    let target = format!("={sess}:");
+    let mut text = String::new();
+    for _ in 0..50 {
+        let cap = Command::new(TMUX)
+            .args(["capture-pane", "-t", &target, "-p", "-J", "-S", "-6"])
+            .output()
+            .expect("capture-pane");
+        text = String::from_utf8_lossy(&cap.stdout).into_owned();
+        if text.contains("CAPTURE-MARKER-12345") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
     assert!(
         text.contains("CAPTURE-MARKER-12345"),
         "capture missing marker; got: {text}"
@@ -542,6 +552,46 @@ fn test_auto_uses_pane_cwd() {
         "got: {toml}"
     );
     assert!(toml.contains("label = \"tmux-picker\""), "got: {toml}");
+
+    cleanup_it_sessions();
+}
+
+/// Session targets must match exactly: tmux falls back to prefix matching
+/// for a bare `-t name`, which would let `show it-ex` read `it-exact`.
+#[test]
+fn test_session_lookup_is_exact_not_prefix() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+    let sess = format!("{IT_PREFIX}exact");
+    create_default_socket_session(&sess);
+
+    let prefix = &sess[..sess.len() - 2];
+    let out = run_binary(&["show", prefix]);
+    assert!(
+        !out.status.success(),
+        "prefix '{prefix}' must not resolve to '{sess}'"
+    );
+    assert!(run_binary(&["show", &sess]).status.success());
+
+    cleanup_it_sessions();
+}
+
+/// tmux treats an argument ending in ';' as a command separator; values
+/// must round-trip anyway.
+#[test]
+fn test_label_value_with_trailing_semicolon_round_trips() {
+    let _lock = serial_lock();
+    cleanup_it_sessions();
+    let sess = format!("{IT_PREFIX}semi");
+    create_default_socket_session(&sess);
+
+    let out = run_binary(&["label", &sess, "--purpose", "fix; then ship;"]);
+    assert!(out.status.success(), "label failed: {out:?}");
+    let shown = String::from_utf8_lossy(&run_binary(&["show", &sess]).stdout).into_owned();
+    assert!(
+        shown.contains("purpose = \"fix; then ship;\""),
+        "got: {shown}"
+    );
 
     cleanup_it_sessions();
 }

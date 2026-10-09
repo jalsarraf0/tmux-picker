@@ -1,7 +1,8 @@
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32String};
+use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 
 use crate::action::Action;
 use crate::clipboard;
@@ -74,6 +75,10 @@ impl SortMode {
 /// short enough that the regular footer comes back quickly.
 pub const FLASH_DURATION: Duration = Duration::from_secs(3);
 
+/// How long a captured preview stays fresh before the picker loop
+/// re-captures it, so the preview tracks a busy pane live.
+pub const PREVIEW_REFRESH: Duration = Duration::from_millis(1000);
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PreviewMode {
     /// Last 6 lines of the highlighted session's active pane.
@@ -144,6 +149,14 @@ pub struct App {
     pub matcher: Matcher,
     /// Last mouse-down `(row, when)` for double-click detection.
     pub last_click: Option<(usize, Instant)>,
+    /// Scratch buffer for fuzzy matching non-ASCII haystacks; reused so
+    /// filtering allocates nothing per keystroke.
+    pub match_buf: Vec<char>,
+    /// When the cached preview (either mode) was captured.
+    pub preview_at: Option<Instant>,
+    /// First visible row of the session list. The renderer keeps it
+    /// scrolled so the selection stays on screen; mouse hit-testing reads it.
+    pub list_offset: Cell<usize>,
 }
 
 impl App {
@@ -174,6 +187,9 @@ impl App {
             preview_windows: None,
             matcher: Matcher::new(MatcherConfig::DEFAULT),
             last_click: None,
+            match_buf: Vec::new(),
+            preview_at: None,
+            list_offset: Cell::new(0),
         };
         app.sort_sessions();
         app.recompute_filter();
@@ -278,7 +294,8 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(idx, s)| {
-                fuzzy_score_session(&pattern, &mut self.matcher, s).map(|score| (idx, score))
+                fuzzy_score_session(&pattern, &mut self.matcher, &mut self.match_buf, s)
+                    .map(|score| (idx, score))
             })
             .collect();
         // Highest score first; ties preserve original insertion order.
@@ -313,6 +330,26 @@ impl App {
     pub fn set_preview(&mut self, text: Option<String>) {
         self.preview = text;
         self.preview_for = self.selected_name().map(String::from);
+        self.preview_at = Some(Instant::now());
+    }
+
+    /// Cache a windows-list snapshot for the selected session.
+    pub fn set_preview_windows(&mut self, snaps: Option<Vec<crate::tmux::WindowSnapshot>>) {
+        self.preview_windows = snaps;
+        self.preview_for = self.selected_name().map(String::from);
+        self.preview_at = Some(Instant::now());
+    }
+
+    /// True when the preview cache belongs to a different session (or was
+    /// invalidated) or is older than `PREVIEW_REFRESH`. A failed capture is
+    /// cached too, so a vanished pane is retried once per refresh period
+    /// rather than every frame.
+    pub fn preview_needs_refresh(&self, now: Instant) -> bool {
+        self.selected_name().is_some()
+            && (!self.preview_is_current()
+                || self
+                    .preview_at
+                    .is_none_or(|at| now.saturating_duration_since(at) >= PREVIEW_REFRESH))
     }
 
     // -----------------------------------------------------------------------
@@ -467,17 +504,19 @@ impl App {
     /// (auto-select bypasses any filter — auto-attach is for the no-input
     /// case where the user wouldn't have started typing a filter anyway).
     fn auto_select(&mut self) {
-        if self.sessions.is_empty() {
-            self.action = Some(Action::Shell);
-            return;
-        }
+        self.action = Some(match self.auto_target() {
+            Some(session) => Action::Attach(session.name.clone()),
+            None => Action::Shell,
+        });
+    }
 
-        // Prefer the first detached session.
-        let pos = self.sessions.iter().position(|s| !s.attached).unwrap_or(0);
-
-        if let Some(name) = self.sessions.get(pos).map(|s| s.name.clone()) {
-            self.action = Some(Action::Attach(name));
-        }
+    /// The session the auto-attach countdown will pick: the first detached
+    /// session, else the first session. None when there are no sessions.
+    pub fn auto_target(&self) -> Option<&Session> {
+        self.sessions
+            .iter()
+            .find(|s| !s.attached)
+            .or_else(|| self.sessions.first())
     }
 
     fn reset_timeout(&mut self) {
@@ -716,11 +755,16 @@ impl App {
 /// Fuzzy-match a session against the pattern. Returns the highest score
 /// across the session's name, label, and project. None when no field
 /// matches.
-fn fuzzy_score_session(pattern: &Pattern, matcher: &mut Matcher, session: &Session) -> Option<u32> {
+fn fuzzy_score_session(
+    pattern: &Pattern,
+    matcher: &mut Matcher,
+    buf: &mut Vec<char>,
+    session: &Session,
+) -> Option<u32> {
     let mut best: Option<u32> = None;
     let mut consider = |s: &str| {
-        let utf32 = Utf32String::from(s);
-        if let Some(score) = pattern.score(utf32.slice(..), matcher) {
+        // ASCII haystacks are borrowed as-is; others decode into `buf`.
+        if let Some(score) = pattern.score(Utf32Str::new(s, buf), matcher) {
             best = Some(best.map_or(score, |prev| prev.max(score)));
         }
     };
@@ -1620,5 +1664,44 @@ mod tests {
         app.handle_mouse_click(1, now + Duration::from_millis(200));
         assert!(app.action.is_none());
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn preview_refreshes_on_selection_change_and_age() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        let t0 = Instant::now();
+        assert!(app.preview_needs_refresh(t0), "nothing cached yet");
+        app.set_preview(Some("x".into()));
+        let fetched = app.preview_at.unwrap();
+        assert!(!app.preview_needs_refresh(fetched));
+        assert!(app.preview_needs_refresh(fetched + PREVIEW_REFRESH));
+        app.move_down();
+        assert!(app.preview_needs_refresh(fetched), "selection moved");
+    }
+
+    #[test]
+    fn failed_capture_is_not_retried_every_frame() {
+        let mut app = App::new(make_sessions(), &Config::default());
+        app.set_preview(None);
+        let fetched = app.preview_at.unwrap();
+        assert!(!app.preview_needs_refresh(fetched + Duration::from_millis(100)));
+        assert!(app.preview_needs_refresh(fetched + PREVIEW_REFRESH));
+    }
+
+    #[test]
+    fn auto_target_prefers_first_detached() {
+        let app = App::new(make_sessions(), &Config::default());
+        assert_eq!(app.auto_target().map(|s| s.name.as_str()), Some("main"));
+        let all_attached: Vec<Session> = make_sessions()
+            .into_iter()
+            .map(|mut s| {
+                s.attached = true;
+                s
+            })
+            .collect();
+        let app = App::new(all_attached, &Config::default());
+        assert_eq!(app.auto_target().map(|s| s.name.as_str()), Some("main"));
+        let app = App::new(Vec::new(), &Config::default());
+        assert!(app.auto_target().is_none());
     }
 }

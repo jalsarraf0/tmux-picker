@@ -81,8 +81,9 @@ unset __BASH_INIT_ONCE
 case "$action" in
     attach:*)
         sess="${action#attach:}"
-        # Try attach; if session vanished, cascade through fallbacks
-        "$_TMUX" attach-session -dt "$sess" 2>/dev/null || _tmux_fallback "$sess"
+        # Try attach; if session vanished, cascade through fallbacks. The
+        # "=" forces an exact match (a bare name also matches by prefix).
+        "$_TMUX" attach-session -dt "=$sess" 2>/dev/null || _tmux_fallback "$sess"
         ;;
     new:*)
         sess="${action#new:}"

@@ -19,6 +19,15 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 nucleo-matcher = "0.3"
 signal-hook = { version = "0.3", default-features = false }
 libc = "0.2"
+unicode-width = "0.2"
+
+# Login-path latency matters: fat LTO + one codegen unit shrink the binary
+# and trim startup. Panics still unwind so the terminal guard restores the
+# tty.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [lib]
 name = "tmux_picker"

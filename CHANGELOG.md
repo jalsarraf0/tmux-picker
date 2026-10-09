@@ -6,9 +6,72 @@ git tags.
 
 ## [Unreleased]
 
-Optimization, elegance, and presentation pass — no behavior change.
+### Neon UI and a faster core
 
-### Changed
+The picker is redrawn as a cyberpunk HUD in the style of the `update`
+dashboard, and every tmux round trip on the login path got cheaper.
+
+#### Added
+
+- **Neon renderer** (`src/ui/`): gradient heavy-line panels with tabbed
+  titles, a block-letter `TMUX // PICKER` banner that decrypts on start and
+  glitches now and then, a pulsing status line, CRT scanlines, a selection
+  band with a light sweep, a gradient auto-attach gauge that names the
+  session it will pick, a `NO SIGNAL` rain state, and modal cards for help
+  and kill confirmation. Wide terminals (≥140 columns) put the feed beside
+  the list; short ones drop the banner, then the boxed gauge, then the feed.
+- **Theme keys**: `primary`, `secondary`, `highlight`, `success`, `text`,
+  `background` (accepts `"reset"`), `animations`, `scanlines`, and
+  `color = "auto" | "truecolor" | "256"`. Auto mode uses truecolor when
+  `$COLORTERM`/`$TERM` advertise it and the nearest xterm-256 colour
+  otherwise. The old starter values (`accent = "cyan"`, `warning = "red"`,
+  `selection_bg = "darkgray"`) are read as "use the default", so existing
+  configs get the new look.
+- **Live feed**: the preview re-captures the selected pane every second
+  and is fetched immediately on selection change (it used to wait for the
+  next tick and showed "(unavailable)" meanwhile).
+- **List scrolling** with a scrollbar, so selections past the visible rows
+  stay on screen; mouse clicks map through the scroll offset; the mouse
+  wheel moves the selection.
+
+#### Fixed
+
+- **Prefix matching**: every session target is now exact (`-t =name`).
+  tmux falls back to prefix matching, so typing a new name like `ma` while
+  `main` existed attached to `main`, and `show`/`label`/`kill` could hit the
+  wrong session. The shell hook's `attach-session` is exact too.
+- **Stale preview**: `capture-pane -S -6` started six lines up in the
+  scrollback, so the preview showed history above the screen instead of the
+  newest output. It now tails the visible screen.
+- **Trailing `;` in values**: tmux reads an argument ending in `;` as a
+  command separator, so `label --purpose "fix;"` stored `fix`. Values are
+  escaped now.
+- Window names containing `|` no longer break the windows view.
+
+#### Performance
+
+- `run_tmux` no longer sleep-polls `try_wait` in 10 ms steps: it drains
+  stdout/stderr with `poll(2)` and returns as soon as tmux exits (this also
+  removes a latent deadlock on outputs larger than a pipe buffer).
+- The startup query runs `list-panes` and `list-sessions` in one tmux
+  process. Measured time to first frame: 32.6 ms → 8.8 ms.
+- `show` is one `display-message` call (was five processes): 52 ms → 2 ms.
+  `label` and `auto` are two calls each: 42 ms → 3.5 ms and 62 ms → 3.5 ms.
+- The windows view captures every pane in one chained tmux call (was one
+  process per window).
+- Fuzzy filtering reuses one decode buffer (no per-keystroke allocation);
+  marker lookup no longer lowercases patterns per comparison.
+- Release profile: fat LTO, one codegen unit, stripped. Binary
+  2.36 MB → 1.47 MB.
+- Effects redraw at 10 fps with banner colour drift quantised to 2 Hz:
+  about 25 KiB/s of terminal output in truecolor, 10 KiB/s in 256-colour,
+  and the old ~1 KiB/s with `animations = false`.
+
+### Optimization, elegance, and presentation pass
+
+No behavior change.
+
+#### Changed
 
 - `list_sessions_with_markers` folds marker discovery into the existing
   `list-panes` query, removing a second subprocess spawn from every picker

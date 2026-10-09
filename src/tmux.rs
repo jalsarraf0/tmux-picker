@@ -1,31 +1,34 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Read;
-use std::process::Command;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::session::Session;
 
 const TMUX_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Resolve the tmux binary once: prefer /usr/bin/tmux, fall back to PATH lookup.
+/// Line printed between the outputs of chained commands. Contains no `|`,
+/// so it can never be mistaken for a pane/session/window line.
+const SEP: &str = "\u{1e}tmux-picker\u{1e}";
+
+/// `#{session_name}|…` per pane, shared by the session and marker queries.
+const PANE_FORMAT: &str = "#{session_name}|#{window_active}|#{pane_active}|#{pane_current_command}";
+const SESSION_FORMAT: &str = "#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}|#{@tmux_picker_label}|#{@tmux_picker_project}|#{@tmux_picker_purpose}|#{@tmux_picker_label_at}";
+
+/// Resolve the tmux binary once: prefer /usr/bin/tmux, else let the
+/// process spawn search PATH (no `which` subprocess).
 fn tmux_bin() -> &'static str {
-    static BIN: OnceLock<String> = OnceLock::new();
+    static BIN: OnceLock<&'static str> = OnceLock::new();
     BIN.get_or_init(|| {
         if std::path::Path::new("/usr/bin/tmux").exists() {
-            return "/usr/bin/tmux".to_string();
+            "/usr/bin/tmux"
+        } else {
+            "tmux"
         }
-        // Fall back to PATH lookup via `which`
-        if let Ok(output) = Command::new("which").arg("tmux").output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return path;
-            }
-        }
-        // Last resort — hope it's in PATH
-        "tmux".to_string()
     })
 }
 
@@ -33,46 +36,208 @@ fn tmux_bin() -> &'static str {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn run_tmux(args: &[&str]) -> Result<String, String> {
+/// Exact-match session target. A bare `-t name` makes tmux fall back to
+/// prefix matching, so `-t ma` would hit `main`.
+fn session_target(name: &str) -> String {
+    format!("={name}")
+}
+
+/// Exact-match target for the session's active pane, for commands whose
+/// `-t` is a pane target (options, display-message, capture-pane).
+fn pane_target(name: &str) -> String {
+    format!("={name}:")
+}
+
+/// tmux treats an argument ending in `;` as a command separator and drops
+/// the `;`. Escape it so user-supplied values reach tmux verbatim.
+fn escape_arg(value: &str) -> Cow<'_, str> {
+    match value.strip_suffix(';') {
+        Some(head) => Cow::Owned(format!("{head}\\;")),
+        None => Cow::Borrowed(value),
+    }
+}
+
+/// Raw result of one tmux invocation.
+struct TmuxOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Spawn tmux, drain stdout and stderr together with `poll(2)` so a large
+/// output can never fill a pipe and deadlock, and enforce `TMUX_TIMEOUT`.
+/// No sleep-polling: the call returns as soon as tmux exits.
+fn exec_tmux(args: &[&str]) -> Result<TmuxOutput, String> {
     let mut child = Command::new(tmux_bin())
         .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to spawn tmux: {e}"))?;
+    let deadline = Instant::now() + TMUX_TIMEOUT;
 
-    // Poll with timeout — tmux commands typically finish in < 100ms
-    let start = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if start.elapsed() > TMUX_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("tmux command timed out".into());
-                }
-                std::thread::sleep(Duration::from_millis(10));
+    let mut streams: [(Option<File>, Vec<u8>); 2] = [
+        (
+            child.stdout.take().map(|p| File::from(OwnedFd::from(p))),
+            Vec::new(),
+        ),
+        (
+            child.stderr.take().map(|p| File::from(OwnedFd::from(p))),
+            Vec::new(),
+        ),
+    ];
+    let mut chunk = [0u8; 16 * 1024];
+    let timed_out = loop {
+        let mut fds = [libc::pollfd {
+            fd: -1,
+            events: libc::POLLIN,
+            revents: 0,
+        }; 2];
+        let mut open = 0;
+        for (slot, (file, _)) in streams.iter().enumerate() {
+            if let Some(file) = file {
+                fds[slot].fd = file.as_raw_fd();
+                open += 1;
             }
-            Err(e) => return Err(format!("failed to wait on tmux: {e}")),
+        }
+        if open == 0 {
+            break false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break true;
+        }
+        let timeout_ms = i32::try_from(remaining.as_millis() + 1).unwrap_or(i32::MAX);
+        // Entries with fd = -1 are ignored by poll(2).
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
+        if rc < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break true;
+        }
+        for (slot, pfd) in fds.iter().enumerate() {
+            if pfd.fd < 0 || pfd.revents == 0 {
+                continue;
+            }
+            let (file, sink) = &mut streams[slot];
+            match file.as_mut().map(|f| f.read(&mut chunk)) {
+                Some(Ok(n)) if n > 0 => sink.extend_from_slice(&chunk[..n]),
+                Some(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                _ => *file = None, // EOF or a read error: stop watching
+            }
         }
     };
 
-    // Drain pipes directly — avoids relying on wait_with_output after try_wait
-    let mut stdout = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-
-    if status.success() {
-        Ok(stdout)
+    // Both pipes are closed, so tmux is exiting; reap it within the budget.
+    let status = if timed_out {
+        None
     } else {
-        let mut stderr_str = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_string(&mut stderr_str);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                Ok(None) => break None,
+                Err(e) => return Err(format!("failed to wait on tmux: {e}")),
+            }
         }
-        Err(stderr_str)
+    };
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("tmux command timed out".into());
+    };
+
+    let [(_, stdout), (_, stderr)] = streams;
+    Ok(TmuxOutput {
+        success: status.success(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+/// Run tmux; stdout on success, stderr (trimmed) on failure.
+fn run_tmux(args: &[&str]) -> Result<String, String> {
+    let out = exec_tmux(args)?;
+    if out.success {
+        Ok(out.stdout)
+    } else {
+        Err(out.stderr.trim_end().to_string())
     }
+}
+
+/// Append `display-message -p SEP` after every command so one tmux process
+/// can run them all and the output can be split back per command.
+fn chain<'a>(commands: &[&[&'a str]]) -> Vec<&'a str> {
+    let mut args = Vec::new();
+    for (i, command) in commands.iter().enumerate() {
+        if i > 0 {
+            args.push(";");
+        }
+        args.extend_from_slice(command);
+        args.extend_from_slice(&[";", "display-message", "-p", SEP]);
+    }
+    args
+}
+
+/// Split the stdout of a `chain` into one chunk per completed command. A
+/// chain stops at its first failing command, so the result can be shorter
+/// than the chain; output after the last separator is discarded.
+fn split_chained(stdout: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut rest = stdout;
+    while let Some(pos) = rest.find(SEP) {
+        chunks.push(&rest[..pos]);
+        let after = &rest[pos + SEP.len()..];
+        rest = after.strip_prefix('\n').unwrap_or(after);
+    }
+    chunks
+}
+
+/// Make captured pane text safe to paint: tabs become spaces and other
+/// control characters are dropped, so they cannot shift or corrupt cells.
+pub fn sanitize_line(line: &str) -> Cow<'_, str> {
+    if !line.chars().any(char::is_control) {
+        return Cow::Borrowed(line);
+    }
+    let mut out = String::with_capacity(line.len() + 8);
+    for c in line.chars() {
+        match c {
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// The last `max` lines of a captured screen, trailing blank lines dropped.
+pub fn tail_lines(captured: &str, max: usize) -> String {
+    let lines: Vec<&str> = captured.trim_end().lines().collect();
+    let start = lines.len().saturating_sub(max);
+    let mut out = String::new();
+    for (i, line) in lines[start..].iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(sanitize_line(line.trim_end()).as_ref());
+    }
+    out
+}
+
+/// Last non-blank line of a captured pane, or "(empty)".
+fn last_nonblank(captured: &str) -> String {
+    captured
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map_or_else(
+            || "(empty)".to_string(),
+            |l| sanitize_line(l.trim()).into_owned(),
+        )
 }
 
 /// Parse `list-panes -a` output into a map of session_name → current command
@@ -200,8 +365,9 @@ pub fn list_sessions() -> Result<Vec<Session>, String> {
     list_sessions_impl(None)
 }
 
-/// Query all sessions and apply marker detection using the same pane query.
-/// This avoids a second `list-panes` subprocess during picker refreshes.
+/// Same as `list_sessions`, also attaching a process marker to each session
+/// from `markers`. One tmux process answers both the pane and session
+/// queries.
 pub fn list_sessions_with_markers(
     markers: &crate::config::Markers,
 ) -> Result<Vec<Session>, String> {
@@ -209,23 +375,20 @@ pub fn list_sessions_with_markers(
 }
 
 fn list_sessions_impl(markers: Option<&crate::config::Markers>) -> Result<Vec<Session>, String> {
-    // Collect pane commands first (best-effort; ignore errors).
-    let pane_output = run_tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}|#{window_active}|#{pane_active}|#{pane_current_command}",
-    ])
-    .unwrap_or_default();
-    let commands = parse_pane_commands(&pane_output);
-    let all_commands = markers.map(|_| parse_all_pane_commands(&pane_output));
-
-    // Query sessions (8-field format includes user-options for metadata).
-    let session_output = run_tmux(&[
-        "list-sessions",
-        "-F",
-        "#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}|#{@tmux_picker_label}|#{@tmux_picker_project}|#{@tmux_picker_purpose}|#{@tmux_picker_label_at}",
-    ])?;
+    let out = exec_tmux(&chain(&[
+        &["list-panes", "-a", "-F", PANE_FORMAT],
+        &["list-sessions", "-F", SESSION_FORMAT],
+    ]))?;
+    let chunks = split_chained(&out.stdout);
+    let (Some(pane_output), Some(session_output)) = (chunks.first(), chunks.get(1)) else {
+        let err = out.stderr.trim_end();
+        return Err(if err.is_empty() {
+            "tmux query failed".into()
+        } else {
+            err.to_string()
+        });
+    };
+    let commands = parse_pane_commands(pane_output);
 
     let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -237,7 +400,8 @@ fn list_sessions_impl(markers: Option<&crate::config::Markers>) -> Result<Vec<Se
         .filter_map(|line| parse_session_line(line, now_epoch, &commands))
         .collect();
 
-    if let (Some(markers), Some(all_commands)) = (markers, all_commands.as_ref()) {
+    if let Some(markers) = markers {
+        let all_commands = parse_all_pane_commands(pane_output);
         for session in &mut sessions {
             if let Some(commands) = all_commands.get(&session.name) {
                 session.marker = markers.lookup(commands);
@@ -249,147 +413,196 @@ fn list_sessions_impl(markers: Option<&crate::config::Markers>) -> Result<Vec<Se
     Ok(sessions)
 }
 
-/// Apply the configured marker map to every session by scanning all of its
-/// panes. Run after `list_sessions` from the picker loop so the integration
-/// tests (which only need plain session metadata) stay marker-agnostic.
+/// Re-run marker discovery on an existing session list (used after a
+/// SIGHUP config reload changes the marker table).
 pub fn populate_markers(sessions: &mut [Session], markers: &crate::config::Markers) {
-    let pane_output = run_tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}|#{window_active}|#{pane_active}|#{pane_current_command}",
-    ])
-    .unwrap_or_default();
+    let pane_output = run_tmux(&["list-panes", "-a", "-F", PANE_FORMAT]).unwrap_or_default();
     let all = parse_all_pane_commands(&pane_output);
     for s in sessions {
-        if let Some(cmds) = all.get(&s.name) {
-            s.marker = markers.lookup(cmds);
-        }
+        s.marker = all.get(&s.name).and_then(|cmds| markers.lookup(cmds));
     }
 }
 
-/// Per-window snapshot for the multi-window preview mode.
+/// One window's name and the active pane's last non-blank line, for the
+/// picker's Tab-toggled windows preview.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct WindowSnapshot {
-    /// Window name.
+    /// Window index as tmux numbers it (`None` for the "more" summary row).
+    pub index: Option<u32>,
     pub name: String,
-    /// Last non-blank line captured from its active pane.
     pub last_line: String,
+    /// True for the session's current window.
+    pub active: bool,
 }
 
-/// List a session's windows along with the last non-blank line of each
-/// window's active pane. Caps at `max` entries; returns an extra entry
-/// `("…", "(N more)")` if windows exceed the cap.
+/// List up to `max` windows of `session` with each active pane's last
+/// non-blank line. Two tmux processes in total: one lists the windows, one
+/// captures every pane. A trailing "(N more)" row is appended when the
+/// session has more than `max` windows.
 pub fn list_windows(session: &str, max: usize) -> Result<Vec<WindowSnapshot>, String> {
     let raw = run_tmux(&[
         "list-windows",
         "-t",
-        session,
+        &session_target(session),
         "-F",
-        "#{window_name}|#{window_active}|#{pane_id}",
+        "#{window_index}\u{1f}#{window_active}\u{1f}#{pane_id}\u{1f}#{window_name}",
     ])?;
-    // Format: name|active|paneid (paneid of active pane in that window — tmux
-    // does not have a per-window "active pane id" format token, but every
-    // window has one active pane and `list-panes -t SESS:WIN -F …` would
-    // require another loop. Instead we use `display-message`-style format on
-    // the window itself which exposes #{pane_id} of the active pane.)
-    let entries: Vec<(String, String)> = raw
+    let entries: Vec<(Option<u32>, bool, &str, &str)> = raw
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(3, '|');
-            let (Some(name), Some(_active), Some(pane_id)) =
-                (fields.next(), fields.next(), fields.next())
+            let mut fields = line.splitn(4, '\u{1f}');
+            let (Some(index), Some(active), Some(pane_id), Some(name)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
             else {
                 return None;
             };
-            Some((name.to_owned(), pane_id.to_owned()))
+            Some((index.parse().ok(), active == "1", pane_id, name))
         })
         .collect();
 
-    let total = entries.len();
-    let mut out: Vec<WindowSnapshot> = Vec::new();
-    for (name, pane_id) in entries.into_iter().take(max) {
-        let captured =
-            run_tmux(&["capture-pane", "-p", "-t", &pane_id, "-S", "-3", "-J"]).unwrap_or_default();
-        let last_line = captured
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("(empty)")
-            .trim()
-            .to_string();
-        out.push(WindowSnapshot { name, last_line });
-    }
-    if total > max {
+    let shown = &entries[..entries.len().min(max)];
+    let captures: Vec<[&str; 7]> = shown
+        .iter()
+        .map(|&(_, _, pane_id, _)| ["capture-pane", "-p", "-J", "-S", "-3", "-t", pane_id])
+        .collect();
+    let commands: Vec<&[&str]> = captures.iter().map(<[&str; 7]>::as_slice).collect();
+    // Use whatever the chain produced even if a pane vanished midway.
+    let captured = if commands.is_empty() {
+        None
+    } else {
+        exec_tmux(&chain(&commands)).ok()
+    };
+    let chunks = captured
+        .as_ref()
+        .map(|o| split_chained(&o.stdout))
+        .unwrap_or_default();
+
+    let mut out: Vec<WindowSnapshot> = shown
+        .iter()
+        .enumerate()
+        .map(|(i, &(index, active, _, name))| WindowSnapshot {
+            index,
+            name: name.to_owned(),
+            last_line: chunks
+                .get(i)
+                .map_or_else(|| "(gone)".to_string(), |c| last_nonblank(c)),
+            active,
+        })
+        .collect();
+    if entries.len() > max {
         out.push(WindowSnapshot {
+            index: None,
             name: "…".into(),
-            last_line: format!("({} more)", total - max),
+            last_line: format!("({} more)", entries.len() - max),
+            active: false,
         });
     }
     Ok(out)
 }
 
-/// Returns true if a tmux session with the given name exists.
+/// Check whether a session with exactly this name exists.
 pub fn session_exists(name: &str) -> bool {
-    run_tmux(&["has-session", "-t", name]).is_ok()
+    run_tmux(&["has-session", "-t", &session_target(name)]).is_ok()
 }
 
-/// Kill a tmux session by name.
+/// Kill the session with exactly this name.
 pub fn kill_session(name: &str) -> Result<(), String> {
-    run_tmux(&["kill-session", "-t", name]).map(|_| ())
+    run_tmux(&["kill-session", "-t", &session_target(name)]).map(|_| ())
 }
 
-/// Rename a tmux session. tmux refuses if `new` is already in use, so the
-/// returned error is propagated up to the picker for the user to see.
+/// Rename the session named exactly `old` to `new`.
 pub fn rename_session(old: &str, new: &str) -> Result<(), String> {
-    run_tmux(&["rename-session", "-t", old, new]).map(|_| ())
+    run_tmux(&[
+        "rename-session",
+        "-t",
+        &session_target(old),
+        &escape_arg(new),
+    ])
+    .map(|_| ())
 }
 
-/// Set a tmux user-option on a session.
-/// `key` must NOT include the `@` prefix; it is added here.
+/// Set a session-level user option (`@key`).
 pub fn set_user_option(session: &str, key: &str, value: &str) -> Result<(), String> {
-    let opt = format!("@{key}");
-    run_tmux(&["set-option", "-t", session, &opt, value]).map(|_| ())
+    set_user_options(session, &[(key, Some(value))])
 }
 
-/// Unset a tmux user-option on a session.
+/// Unset a session-level user option (`@key`).
 pub fn unset_user_option(session: &str, key: &str) -> Result<(), String> {
-    let opt = format!("@{key}");
-    run_tmux(&["set-option", "-t", session, "-u", &opt]).map(|_| ())
+    set_user_options(session, &[(key, None)])
 }
 
-/// Return the value of a tmux user-option, or None if unset.
+/// Apply several user-option changes in a single tmux process: `Some(v)`
+/// sets `@key` to `v`, `None` unsets it.
+pub fn set_user_options(session: &str, changes: &[(&str, Option<&str>)]) -> Result<(), String> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let target = pane_target(session);
+    let opts: Vec<String> = changes.iter().map(|(key, _)| format!("@{key}")).collect();
+    let values: Vec<Option<Cow<'_, str>>> =
+        changes.iter().map(|(_, v)| v.map(escape_arg)).collect();
+    let mut args: Vec<&str> = Vec::new();
+    for (i, (opt, value)) in opts.iter().zip(&values).enumerate() {
+        if i > 0 {
+            args.push(";");
+        }
+        match value {
+            Some(v) => args.extend_from_slice(&["set-option", "-t", &target, opt, v]),
+            None => args.extend_from_slice(&["set-option", "-t", &target, "-u", opt]),
+        }
+    }
+    run_tmux(&args).map(|_| ())
+}
+
+/// Read a session-level user option (`@key`); None when unset or empty.
 pub fn get_user_option(session: &str, key: &str) -> Option<String> {
-    let opt = format!("@{key}");
-    let out = run_tmux(&["show-options", "-t", session, "-v", &opt]).ok()?;
-    let trimmed = out.trim_end_matches('\n').to_string();
-    if trimmed.is_empty() {
-        None
+    let opt = format!("#{{@{key}}}");
+    let mut values = display(session, &[&opt]).ok()?;
+    values.pop().filter(|v| !v.is_empty())
+}
+
+/// Expand several tmux formats against the session's active pane in one
+/// tmux process. Errs with "session '…' does not exist" when there is no
+/// session with exactly that name.
+pub fn display(session: &str, formats: &[&str]) -> Result<Vec<String>, String> {
+    let mut format = String::from("#{session_name}");
+    for f in formats {
+        format.push('\u{1f}');
+        format.push_str(f);
+    }
+    let out = run_tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane_target(session),
+        &format,
+    ])?;
+    let mut fields = out.trim_end_matches('\n').split('\u{1f}');
+    // display-message does not fail on a missing target; it expands to
+    // empty strings instead, so check the name came back.
+    if fields.next() != Some(session) {
+        return Err(format!("session '{session}' does not exist"));
+    }
+    let values: Vec<String> = fields.map(str::to_owned).collect();
+    if values.len() == formats.len() {
+        Ok(values)
     } else {
-        Some(trimmed)
+        Err("unexpected display-message output".into())
     }
 }
 
-/// Get the current pane working directory for a session.
-/// Uses the session's active window's active pane.
+/// The current working directory of the session's active pane.
 pub fn pane_current_path(session: &str) -> Result<String, String> {
-    let out = run_tmux(&[
-        "display-message",
-        "-t",
-        session,
-        "-p",
-        "#{pane_current_path}",
-    ])?;
-    Ok(out.trim_end_matches('\n').to_string())
+    display(session, &["#{pane_current_path}"]).map(|mut v| v.pop().unwrap_or_default())
 }
 
-/// Capture the last `lines` lines of the session's active pane buffer.
-/// Returns up to `lines` lines (may be fewer if the pane buffer is shorter).
+/// The last `lines` non-blank-trailing lines of what the session's active
+/// pane shows right now, sanitized for painting. (Capturing from the visible
+/// screen, not `-S -N`: that starts N lines up in the scrollback and would
+/// return history above the screen rather than the newest output.)
 pub fn pane_capture(session: &str, lines: u16) -> Result<String, String> {
-    let start = format!("-{lines}");
-    let out = run_tmux(&["capture-pane", "-t", session, "-p", "-J", "-S", &start])?;
-    // Strip trailing whitespace/newlines for cleaner rendering.
-    Ok(out.trim_end().to_string())
+    let out = run_tmux(&["capture-pane", "-p", "-J", "-t", &pane_target(session)])?;
+    Ok(tail_lines(&out, usize::from(lines)))
 }
 
 // ---------------------------------------------------------------------------
@@ -507,5 +720,74 @@ mod tests {
         let input = "main|0|1|vim\n";
         let map = parse_pane_commands(input);
         assert!(map.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Process plumbing helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn escape_arg_protects_trailing_semicolon() {
+        assert_eq!(escape_arg("plain"), "plain");
+        assert_eq!(escape_arg("fix;"), "fix\\;");
+        assert_eq!(escape_arg(";"), "\\;");
+        assert_eq!(escape_arg("a;b"), "a;b");
+    }
+
+    #[test]
+    fn targets_force_exact_match() {
+        assert_eq!(session_target("main"), "=main");
+        assert_eq!(pane_target("main"), "=main:");
+    }
+
+    #[test]
+    fn chain_terminates_every_command_with_separator() {
+        let args = chain(&[&["list-panes", "-a"], &["list-sessions"]]);
+        assert_eq!(
+            args,
+            [
+                "list-panes",
+                "-a",
+                ";",
+                "display-message",
+                "-p",
+                SEP,
+                ";",
+                "list-sessions",
+                ";",
+                "display-message",
+                "-p",
+                SEP,
+            ]
+        );
+    }
+
+    #[test]
+    fn split_chained_keeps_only_completed_chunks() {
+        let out = format!("a|1\nb|2\n{SEP}\nmain|1\n{SEP}\npartial");
+        assert_eq!(split_chained(&out), ["a|1\nb|2\n", "main|1\n"]);
+        assert_eq!(split_chained(&format!("{SEP}\n")), [""]);
+        assert!(split_chained("no separator at all").is_empty());
+    }
+
+    #[test]
+    fn tail_lines_takes_the_newest_lines() {
+        let screen = "one\ntwo\nthree\nfour\n\n\n   \n";
+        assert_eq!(tail_lines(screen, 2), "three\nfour");
+        assert_eq!(tail_lines(screen, 10), "one\ntwo\nthree\nfour");
+        assert_eq!(tail_lines("", 3), "");
+    }
+
+    #[test]
+    fn sanitize_line_expands_tabs_and_drops_controls() {
+        assert_eq!(sanitize_line("a\tb"), "a    b");
+        assert_eq!(sanitize_line("x\u{7}y\u{1b}z"), "xyz");
+        assert!(matches!(sanitize_line("clean"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn last_nonblank_skips_trailing_blank_lines() {
+        assert_eq!(last_nonblank("$ make\nok\n\n  \n"), "ok");
+        assert_eq!(last_nonblank("\n\n"), "(empty)");
     }
 }

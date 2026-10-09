@@ -1472,6 +1472,7 @@ dependencies = [
  "ratatui",
  "signal-hook",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

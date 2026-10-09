@@ -61,45 +61,61 @@ use crate::tmux;
 
 const KEYS: &[&str] = &["label", "project", "purpose", "label_at"];
 
-/// Read a session's metadata via per-key tmux show-options calls.
-/// Used by `tmux-picker show <session>`. The picker TUI uses the batch
+/// The four `@tmux_picker_*` option formats, in `KEYS` order.
+const FORMATS: &[&str] = &[
+    "#{@tmux_picker_label}",
+    "#{@tmux_picker_project}",
+    "#{@tmux_picker_purpose}",
+    "#{@tmux_picker_label_at}",
+];
+
+fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn nonempty(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Read a session's metadata in one tmux call. Used by
+/// `tmux-picker show <session>`. The picker TUI uses the batch
 /// list-sessions parse path instead.
 pub fn read(session: &str) -> Result<Metadata, String> {
-    if !tmux::session_exists(session) {
-        return Err(format!("session '{session}' does not exist"));
-    }
+    let mut values = tmux::display(session, FORMATS)?.into_iter();
+    let mut next = || values.next().and_then(nonempty);
     Ok(Metadata {
-        label: tmux::get_user_option(session, "tmux_picker_label"),
-        project: tmux::get_user_option(session, "tmux_picker_project"),
-        purpose: tmux::get_user_option(session, "tmux_picker_purpose"),
-        label_at: tmux::get_user_option(session, "tmux_picker_label_at")
-            .and_then(|s| s.parse().ok()),
+        label: next(),
+        project: next(),
+        purpose: next(),
+        label_at: next().and_then(|s| s.parse().ok()),
     })
 }
 
-/// Write any non-None field of `m` to tmux user-options.
-/// None fields are left untouched (does NOT clear).
+/// Write any non-None field of `m` to tmux user-options, in one tmux call
+/// after the existence check. None fields are left untouched (does NOT
+/// clear).
 pub fn write(session: &str, m: &Metadata) -> Result<(), String> {
     if !tmux::session_exists(session) {
         return Err(format!("session '{session}' does not exist"));
     }
+    let mut changes: Vec<(&str, Option<&str>)> = Vec::new();
     if let Some(ref v) = m.label {
-        tmux::set_user_option(session, "tmux_picker_label", v)?;
+        changes.push(("tmux_picker_label", Some(v)));
     }
     if let Some(ref v) = m.project {
-        tmux::set_user_option(session, "tmux_picker_project", v)?;
+        changes.push(("tmux_picker_project", Some(v)));
     }
     if let Some(ref v) = m.purpose {
-        tmux::set_user_option(session, "tmux_picker_purpose", v)?;
+        changes.push(("tmux_picker_purpose", Some(v)));
     }
     // Update label_at only if any of label/project/purpose was set.
-    if m.label.is_some() || m.project.is_some() || m.purpose.is_some() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        tmux::set_user_option(session, "tmux_picker_label_at", &now.to_string())?;
+    let now = now_epoch().to_string();
+    if !changes.is_empty() {
+        changes.push(("tmux_picker_label_at", Some(&now)));
     }
-    Ok(())
+    tmux::set_user_options(session, &changes)
 }
 
 /// Remove every @tmux_picker_* option from a session.
@@ -107,16 +123,18 @@ pub fn clear(session: &str) -> Result<(), String> {
     if !tmux::session_exists(session) {
         return Err(format!("session '{session}' does not exist"));
     }
-    for key in KEYS {
-        let full = format!("tmux_picker_{key}");
-        // Ignore unset-on-already-unset errors; tmux returns non-zero for those.
-        let _ = tmux::unset_user_option(session, &full);
-    }
-    Ok(())
+    let keys: Vec<String> = KEYS
+        .iter()
+        .map(|key| format!("tmux_picker_{key}"))
+        .collect();
+    let changes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
+    // Unsetting an already-unset option succeeds, so one chain covers all.
+    tmux::set_user_options(session, &changes)
 }
 
 /// Auto-detect project + label from session's active pane cwd.
-/// Never overwrites a manually-set label or purpose.
+/// Never overwrites a manually-set label or purpose. Two tmux calls: one
+/// reads the cwd and current options, one writes the changes.
 ///
 /// Search order for the project root:
 ///   1. Walk up from the pane cwd until a `.git` directory exists.
@@ -125,38 +143,45 @@ pub fn clear(session: &str) -> Result<(), String> {
 ///      they create a new session named after a project.
 ///   3. Otherwise fall back to the pane cwd itself.
 pub fn auto_detect(session: &str) -> Result<(), String> {
-    if !tmux::session_exists(session) {
-        return Err(format!("session '{session}' does not exist"));
-    }
-    let cwd = tmux::pane_current_path(session)?;
+    let current = tmux::display(
+        session,
+        &[
+            "#{pane_current_path}",
+            "#{@tmux_picker_label}",
+            "#{@tmux_picker_purpose}",
+        ],
+    )?;
+    let [cwd, existing_label, existing_purpose] = <[String; 3]>::try_from(current)
+        .map_err(|_| "unexpected display-message output".to_string())?;
     let project = walk_up_to_git_root(&cwd)
         .or_else(|| project_for_session_name(session))
         .unwrap_or(cwd);
 
-    tmux::set_user_option(session, "tmux_picker_project", &project)?;
+    let label = if existing_label.is_empty() {
+        std::path::Path::new(&project)
+            .file_name()
+            .and_then(|base| base.to_str())
+            .map(String::from)
+    } else {
+        None
+    };
+    let purpose =
+        if existing_purpose.is_empty() && std::path::Path::new(&project).join(".git").exists() {
+            git_current_branch(&project).map(|branch| format!("branch:{branch}"))
+        } else {
+            None
+        };
 
-    let existing_label = tmux::get_user_option(session, "tmux_picker_label");
-    if existing_label.is_none()
-        && let Some(base) = std::path::Path::new(&project).file_name()
-        && let Some(s) = base.to_str()
-    {
-        tmux::set_user_option(session, "tmux_picker_label", s)?;
+    let now = now_epoch().to_string();
+    let mut changes: Vec<(&str, Option<&str>)> = vec![("tmux_picker_project", Some(&project))];
+    if let Some(ref label) = label {
+        changes.push(("tmux_picker_label", Some(label)));
     }
-
-    if std::path::Path::new(&project).join(".git").exists()
-        && tmux::get_user_option(session, "tmux_picker_purpose").is_none()
-        && let Some(branch) = git_current_branch(&project)
-    {
-        tmux::set_user_option(session, "tmux_picker_purpose", &format!("branch:{branch}"))?;
+    if let Some(ref purpose) = purpose {
+        changes.push(("tmux_picker_purpose", Some(purpose)));
     }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    tmux::set_user_option(session, "tmux_picker_label_at", &now.to_string())?;
-
-    Ok(())
+    changes.push(("tmux_picker_label_at", Some(&now)));
+    tmux::set_user_options(session, &changes)
 }
 
 /// Walk from `start` up the directory tree until a `.git` directory exists.

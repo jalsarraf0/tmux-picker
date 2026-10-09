@@ -17,23 +17,9 @@ shell — SSH login or a local terminal, any emulator — shows every tmux
 session with live status, and lands you in the right one, or a fresh one,
 without you lifting a finger.
 
-```
-┌ tmux sessions ──────────────────────────────────────────────────┐
-│                                                                    │
-│  1  🤖 auth-refactor (api)          3w   ●  claude       2m idle  │
-│     ↳ ~/git/api  ·  PR #234                                      │
-│  2  🦀 tmux-picker                  2w   ●  cargo         14s idle│
-│     ↳ ~/git/tmux-picker  ·  branch:optimize                      │
-│  3     scratch                      1w      bash          4h idle│
-│  4  ✏️  notes                        1w      nvim         1d idle │
-│                                                                    │
-├ preview (Tab: windows) ───────────────────────────────────────────┤
-│  $ cargo test --release                                          │
-│  running 84 tests                                                │
-│  test result: ok. 84 passed; 0 failed                            │
-└────────────────────────────────────────────────────────────────┘
-  ↑↓ move   ⏎ attach   / filter   n new   K kill   r rename   ? help
-```
+<p align="center">
+  <img src="docs/screenshot.png" alt="tmux-picker: neon session list, live pane feed and auto-attach countdown" width="900">
+</p>
 
 ## Why not `tmux ls` / a shell alias / fzf one-liner?
 
@@ -56,14 +42,21 @@ without you lifting a finger.
 - **Per-session context** — label, project path, and purpose live directly
   in tmux user-options (`tmux-picker label/show/auto`); no external state
   file to get out of sync.
-- **Live pane preview** — last 6 lines of the highlighted session, or `Tab`
-  for a per-window summary.
+- **Live pane feed** — the newest lines of the highlighted session's pane,
+  refreshed every second, or `Tab` for a per-window summary.
+- **Neon HUD** — gradient heavy-line panels, a glitching block-letter
+  banner, CRT scanlines and a shimmering auto-attach gauge, in truecolor
+  with an automatic 256-colour fallback. Every colour is themable and the
+  effects switch off with one key (`animations = false`).
 - **Process markers at a glance** — 🤖 claude, 🦀 cargo, ✏️ vim/nvim, 📊 htop,
   📦 node, 🐍 python, 🌿 git — fully customizable.
 - **Quick ops** — kill (`K`, confirm-gated), rename (`r`), yank name to
   clipboard (`y`), sort cycle (`o`).
 - **10-second auto-attach** to the most recently active detached session —
-  tunable, or disable for a manual-only picker.
+  tunable, or disable for a manual-only picker. The gauge shows exactly
+  which session it will pick.
+- **Fast** — a single tmux call feeds the first frame, and `show`, `label`
+  and `auto` take one or two.
 - **Fails open** — binary missing, misconfigured, or erroring never strands
   you; the shell hook falls back to a plain `tmux new-session -As main`.
 
@@ -254,8 +247,9 @@ picked anymore.
 | `Enter` / double-click | Attach | | `r` | Rename |
 | `n` | New session | | `o` | Cycle sort mode |
 | `/` | Fuzzy filter | | `y` | Yank session name |
-| `Esc` | Clear filter / cancel | | `Tab` | Toggle preview / windows view |
-| `?` | Help | | `SIGHUP` | Reload config in place |
+| `Esc` | Clear filter / cancel | | `Tab` | Toggle feed / windows view |
+| `?` | Help | | Mouse wheel | Scroll the list |
+| `SIGHUP` | Reload config in place | | | |
 
 ## CLI
 
@@ -292,16 +286,35 @@ stderr warning — login auto-attach is never blocked.
 timeout_secs = 10          # auto-attach countdown, seconds; 0 disables it
 trigger_mode = "always"    # "always" | "ssh_only"
 
-[theme]
-accent = "cyan"
-warning = "red"
-selection_bg = "darkgray"
+[theme]                    # neon defaults shown
+primary = "#ff2a6d"        # titles, selector, banner
+secondary = "#7a04eb"      # borders, gradients
+accent = "#05d9e8"         # values, numbers, cursor
+highlight = "#f9f002"      # status line, running commands
+success = "#39ff14"        # attached sessions, live activity
+warning = "#ff003c"        # kill confirm, errors
+text = "#c4bee4"
+background = "#080512"     # "reset" keeps your terminal's background
+selection_bg = "#1e0a36"
+animations = true          # glitch / pulse / shimmer; false = static frame
+scanlines = true           # CRT shading on alternate rows
+color = "auto"             # "auto" | "truecolor" | "256"
 
 [markers]
 disable_defaults = false
 # [markers.patterns]
 # foo = "★"
 ```
+
+Colours take names (`cyan`, `darkgray`, `lightmagenta`, …), 256-colour
+indexes (`196`), hex (`"#ff8800"`, `"#abc"`) or `"reset"`. `color = "auto"`
+uses truecolor when `$COLORTERM` or `$TERM` advertise it (kitty, ghostty,
+alacritty, foot, wezterm, …) and the nearest xterm-256 colours otherwise.
+SSH does not forward `$COLORTERM`, so set `color = "truecolor"` if your
+terminal supports it. Over slow links, `animations = false` cuts redraw
+traffic to what the old static UI sent. A starter file from an older
+release (`accent = "cyan"`, `warning = "red"`, `selection_bg = "darkgray"`)
+keeps getting the neon defaults.
 
 `tmux-picker --init` writes a fully-commented starter file; `tmux-picker
 --check-config` prints parse warnings plus the effective config.
