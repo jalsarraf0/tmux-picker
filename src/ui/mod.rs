@@ -295,7 +295,7 @@ impl Ui {
                     r.width.saturating_sub(2 * u16::from(boxed)),
                     1,
                 );
-                self.selection_band(buf, band, fx);
+                self.selection_band(buf, band, boxed, fx);
             }
             cols.row(buf, pal, y, vis + 1, session, selected);
         }
@@ -313,22 +313,29 @@ impl Ui {
         }
     }
 
-    /// Highlight band for the selected row, with a slow light sweep.
-    fn selection_band(&self, buf: &mut Buffer, band: Rect, fx: Fx) {
+    /// The selected row: a neon beam that burns hot at the left edge and
+    /// fades to violet, with glowing caps in the box gutters (`caps`) and a
+    /// slow light sweep.
+    fn selection_band(&self, buf: &mut Buffer, band: Rect, caps: bool, fx: Fx) {
         let pal = &self.pal;
-        fill_bg(buf, band, pal.c(pal.hilite));
-        if !fx.on {
-            return;
-        }
-        let sweep = (fx.t * 32.0) % (f32::from(band.width) + 80.0) - 8.0;
+        let sweep = fx
+            .on
+            .then(|| (fx.t * 32.0) % (f32::from(band.width) + 80.0) - 8.0);
+        let span = f32::from(band.width.saturating_sub(1).max(1));
         for i in 0..band.width {
-            let d = (f32::from(i) - sweep).abs();
-            if d < 5.0 {
-                let glow = lerp(pal.hilite, pal.purple, 0.38 * (1.0 - d / 5.0));
-                if let Some(c) = buf.cell_mut((band.x + i, band.y)) {
-                    c.set_bg(pal.c(glow));
-                }
+            let mut col = gradient(&pal.beam, f32::from(i) / span);
+            if let Some(d) = sweep.map(|s| (f32::from(i) - s).abs())
+                && d < 5.0
+            {
+                col = lerp(col, pal.pink, 0.45 * (1.0 - d / 5.0));
             }
+            if let Some(c) = buf.cell_mut((band.x + i, band.y)) {
+                c.set_symbol(" ").set_bg(pal.c(col));
+            }
+        }
+        if caps && band.width >= 2 {
+            cell(buf, band.x, band.y, '▌', pal.bold(pal.pink));
+            cell(buf, band.right() - 1, band.y, '▐', pal.bold(pal.cyan));
         }
     }
 
@@ -993,13 +1000,15 @@ impl Columns {
         selected: bool,
     ) {
         let stale = s.is_stale();
+        // Muted colours would sink into the selection beam; lift them.
+        let muted = |c: Rgb| if selected { pal.text } else { c };
         // Selector + 1-indexed number within the visible list, so digit
         // selection lines up with what the user sees.
         if selected {
-            put(buf, self.x, y, "▶", 1, pal.bold(pal.pink));
+            put(buf, self.x, y, "▶", 1, pal.bold(pal.white));
         }
         let num_style = if selected {
-            pal.bold(pal.cyan)
+            pal.bold(pal.white)
         } else {
             pal.fg(pal.dim)
         };
@@ -1011,7 +1020,7 @@ impl Columns {
             put(buf, nx, y, glyph, 2, Style::new());
         }
         let name_style = if stale {
-            pal.fg(pal.dim)
+            pal.fg(muted(pal.dim))
         } else if s.is_claude() {
             pal.bold(pal.cyan)
         } else {
@@ -1025,7 +1034,14 @@ impl Columns {
                 let left = (nx + 3 + room).saturating_sub(end);
                 if left > 3 {
                     let tail = format!(" ({})", s.name);
-                    put(buf, end, y, &ellipsize(&tail, left), left, pal.fg(pal.dim));
+                    put(
+                        buf,
+                        end,
+                        y,
+                        &ellipsize(&tail, left),
+                        left,
+                        pal.fg(muted(pal.dim)),
+                    );
                 }
             }
             None => {
@@ -1042,11 +1058,11 @@ impl Columns {
                 y,
                 &win,
                 COL_WIN,
-                pal.fg(pal.dim),
+                pal.fg(muted(pal.dim)),
             );
         }
         if self.cmd {
-            let col = if stale { pal.dim } else { pal.yellow };
+            let col = if stale { muted(pal.dim) } else { pal.yellow };
             put(
                 buf,
                 self.cmd_x(),
@@ -1061,7 +1077,11 @@ impl Columns {
         } else {
             ("◇", "")
         };
-        let link_col = if s.attached { pal.green } else { pal.faint };
+        let link_col = if s.attached {
+            pal.green
+        } else {
+            muted(pal.faint)
+        };
         let lx = put(buf, self.link_x(), y, glyph, 1, pal.bold(link_col));
         if self.link_text {
             put(buf, lx, y, text, 7, pal.bold(link_col));
@@ -1075,13 +1095,19 @@ impl Columns {
             } else if secs < 300 {
                 Some(pal.yellow)
             } else {
-                Some(pal.dim)
+                Some(muted(pal.dim))
             };
             let ax = self.act_x();
             if let Some(col) = dot {
                 put(buf, ax, y, "●", 1, pal.fg(col));
             }
-            let text_col = if stale { pal.faint } else { pal.text };
+            let text_col = if selected {
+                pal.white
+            } else if stale {
+                pal.faint
+            } else {
+                pal.text
+            };
             put(
                 buf,
                 ax + 2,
@@ -1556,6 +1582,49 @@ mod tests {
             .expect("row rendered");
         assert_eq!(ui.session_at(&app, area, 20, y), Some(2));
         assert_eq!(ui.session_at(&app, area, 20, 0), None);
+    }
+
+    /// The selected row must stand out from the CRT-shaded rows around it,
+    /// and carry neon edge caps in the box gutters.
+    #[test]
+    fn selection_band_stands_out() {
+        let theme = Theme {
+            animations: false,
+            ..Theme::default()
+        };
+        let ui = frozen(&theme, true);
+        let mut app = App::new(sessions(6), &Config::default());
+        app.move_down();
+        let buf = render(&ui, &app, 100, 30, 5.0);
+        let row_of = |name: &str| {
+            (0..30)
+                .find(|&y| {
+                    let row: String = (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                    row.contains(name)
+                })
+                .expect("row rendered")
+        };
+        let rgb = |c: Color| match c {
+            Color::Rgb(r, g, b) => [i32::from(r), i32::from(g), i32::from(b)],
+            other => panic!("expected rgb, got {other:?}"),
+        };
+        let dist = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).sum::<i32>();
+        let name = |vis: usize| app.sessions[app.filtered_indices[vis]].name.clone();
+        let sel = row_of(app.selected_name().expect("selection"));
+        let (above, below) = (row_of(&name(0)), row_of(&name(2)));
+        assert_eq!((above + 1, below - 1), (sel, sel));
+        for other in [above, below] {
+            for x in [10, 50, 90] {
+                let d = dist(rgb(buf[(x, sel)].bg), rgb(buf[(x, other)].bg));
+                assert!(
+                    d >= 100,
+                    "col {x}: selected bg too close to row {other} ({d})"
+                );
+            }
+        }
+        assert_eq!(buf[(1, sel)].symbol(), "▌", "left edge cap");
+        assert_eq!(buf[(98, sel)].symbol(), "▐", "right edge cap");
+        assert_eq!(buf[(1, above)].symbol(), " ");
     }
 
     #[test]

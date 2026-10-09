@@ -40,7 +40,7 @@ success = "#39ff14"        # attached sessions, live activity (green)
 warning = "#ff003c"        # kill confirm, errors (red)
 text = "#c4bee4"           # body text
 background = "#080512"     # "reset" keeps your terminal's background
-selection_bg = "#1e0a36"   # highlighted row background
+selection_bg = "#1e0a36"   # base of the selected-row beam
 animations = true          # glitch, pulse and shimmer effects; false = static
 scanlines = true           # CRT-style alternating row shading
 color = "auto"             # "auto" | "truecolor" | "256"
@@ -223,7 +223,7 @@ pub struct Theme {
     pub accent: Color,
     /// Kill confirm and errors (red).
     pub warning: Color,
-    /// Background of the highlighted row.
+    /// Base colour of the selected-row beam.
     pub selection_bg: Color,
     /// Titles, selector and banner (neon pink).
     pub primary: Color,

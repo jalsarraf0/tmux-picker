@@ -295,7 +295,7 @@ success = "#39ff14"        # attached sessions, live activity
 warning = "#ff003c"        # kill confirm, errors
 text = "#c4bee4"
 background = "#080512"     # "reset" keeps your terminal's background
-selection_bg = "#1e0a36"
+selection_bg = "#1e0a36"   # base of the selected-row beam
 animations = true          # glitch / pulse / shimmer; false = static frame
 scanlines = true           # CRT shading on alternate rows
 color = "auto"             # "auto" | "truecolor" | "256"

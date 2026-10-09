@@ -16,10 +16,12 @@ dashboard, and every tmux round trip on the login path got cheaper.
 - **Neon renderer** (`src/ui/`): gradient heavy-line panels with tabbed
   titles, a block-letter `TMUX // PICKER` banner that decrypts on start and
   glitches now and then, a pulsing status line, CRT scanlines, a selection
-  band with a light sweep, a gradient auto-attach gauge that names the
-  session it will pick, a `NO SIGNAL` rain state, and modal cards for help
-  and kill confirmation. Wide terminals (≥140 columns) put the feed beside
-  the list; short ones drop the banner, then the boxed gauge, then the feed.
+  beam (hot pink at the left edge fading to violet, pink/cyan caps in the
+  box gutters, muted columns brightened, a light sweep), a gradient
+  auto-attach gauge that names the session it will pick, a `NO SIGNAL` rain
+  state, and modal cards for help and kill confirmation. Wide terminals
+  (≥140 columns) put the feed beside the list; short ones drop the banner,
+  then the boxed gauge, then the feed.
 - **Theme keys**: `primary`, `secondary`, `highlight`, `success`, `text`,
   `background` (accepts `"reset"`), `animations`, `scanlines`, and
   `color = "auto" | "truecolor" | "256"`. Auto mode uses truecolor when

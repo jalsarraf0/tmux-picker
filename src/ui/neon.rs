@@ -203,6 +203,8 @@ pub struct Palette {
     pub scan: Rgb,
     /// Highlighted row background.
     pub hilite: Rgb,
+    /// Selected-row beam, left to right: primary-hot, violet, fading.
+    pub beam: [Rgb; 3],
     /// Modal card background.
     pub overlay: Rgb,
     pub pink: Rgb,
@@ -243,6 +245,7 @@ impl Palette {
         let purple = pick(theme.secondary, d.secondary);
         let hilite = pick(theme.selection_bg, d.selection_bg);
         let dim = lerp(lerp(base, text, 0.58), purple, 0.12);
+        let pink = pick(theme.primary, d.primary);
         Palette {
             truecolor,
             animate: theme.animations,
@@ -250,8 +253,13 @@ impl Palette {
             bg,
             scan: lerp(base, hilite, 0.22),
             hilite,
+            beam: [
+                lerp(hilite, pink, 0.45),
+                lerp(hilite, purple, 0.42),
+                lerp(hilite, purple, 0.2),
+            ],
             overlay: lerp(base, hilite, 0.45),
-            pink: pick(theme.primary, d.primary),
+            pink,
             purple,
             cyan: pick(theme.accent, d.accent),
             yellow: pick(theme.highlight, d.highlight),
