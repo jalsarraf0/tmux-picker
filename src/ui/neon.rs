@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::config::{ColorMode, Theme};
+use crate::config::{ColorMode, Theme, ThemeStyle};
 
 /// An sRGB triple. All colour math happens here before resolving to a
 /// terminal `Color`.
@@ -193,6 +193,9 @@ pub fn env_truecolor() -> bool {
 #[derive(Debug, Clone)]
 pub struct Palette {
     truecolor: bool,
+    /// The classic look: thin borders, plain wording, no HUD effects, and
+    /// ANSI colours sent as palette indexes so the terminal's theme shows.
+    pub classic: bool,
     /// Glitch, pulse and shimmer effects.
     pub animate: bool,
     /// CRT shading on alternate rows.
@@ -239,8 +242,9 @@ impl Palette {
                 .or_else(|| to_rgb(fallback))
                 .unwrap_or(FALLBACK_BG)
         };
+        let classic = theme.style == ThemeStyle::Classic;
         let bg = to_rgb(theme.background);
-        let base = bg.unwrap_or(FALLBACK_BG);
+        let base = bg.unwrap_or(if classic { [0, 0, 0] } else { FALLBACK_BG });
         let text = pick(theme.text, d.text);
         let purple = pick(theme.secondary, d.secondary);
         let hilite = pick(theme.selection_bg, d.selection_bg);
@@ -248,6 +252,7 @@ impl Palette {
         let pink = pick(theme.primary, d.primary);
         Palette {
             truecolor,
+            classic,
             animate: theme.animations,
             scanlines: theme.scanlines,
             bg,
@@ -279,6 +284,11 @@ impl Palette {
 
     /// Resolve an RGB value for this terminal.
     pub fn c(&self, rgb: Rgb) -> Color {
+        if self.classic
+            && let Some(i) = ANSI16.iter().position(|&a| a == rgb)
+        {
+            return Color::Indexed(i as u8);
+        }
         if self.truecolor {
             Color::Rgb(rgb[0], rgb[1], rgb[2])
         } else {
@@ -479,26 +489,45 @@ impl NeonBox<'_> {
         });
         let (x0, y0) = (area.x, area.y);
         let (x1, y1) = (area.right() - 1, area.bottom() - 1);
+        // Classic: thin rounded lines in one colour, no gradient.
+        let (a, b) = if pal.classic {
+            let line = self.stops.map_or(pal.purple, |(a, _)| a);
+            (line, line)
+        } else {
+            (a, b)
+        };
+        let [h, v, tl, tr, bl, br] = if pal.classic {
+            ['─', '│', '╭', '╮', '╰', '╯']
+        } else {
+            ['━', '┃', '┏', '┓', '┗', '┛']
+        };
         let span = f32::from(area.width.saturating_sub(1).max(1));
         for x in x0..=x1 {
             let col = pal.fg(gradient(&[a, b], f32::from(x - x0) / span));
-            cell(buf, x, y0, '━', col);
-            cell(buf, x, y1, '━', col);
+            cell(buf, x, y0, h, col);
+            cell(buf, x, y1, h, col);
         }
         for y in y0 + 1..y1 {
-            cell(buf, x0, y, '┃', pal.fg(a));
-            cell(buf, x1, y, '┃', pal.fg(b));
+            cell(buf, x0, y, v, pal.fg(a));
+            cell(buf, x1, y, v, pal.fg(b));
         }
-        cell(buf, x0, y0, '┏', pal.fg(a));
-        cell(buf, x1, y0, '┓', pal.fg(b));
-        cell(buf, x0, y1, '┗', pal.fg(a));
-        cell(buf, x1, y1, '┛', pal.fg(b));
+        cell(buf, x0, y0, tl, pal.fg(a));
+        cell(buf, x1, y0, tr, pal.fg(b));
+        cell(buf, x0, y1, bl, pal.fg(a));
+        cell(buf, x1, y1, br, pal.fg(b));
 
-        let edge = if self.hot { pal.cyan } else { pal.dim };
+        let edge = if pal.classic {
+            a
+        } else if self.hot {
+            pal.cyan
+        } else {
+            pal.dim
+        };
+        let [open, close] = if pal.classic { [h; 2] } else { ['┫', '┣'] };
         let room = area.width.saturating_sub(6);
         if !self.title.is_empty() && room > 2 {
             let title = ellipsize(self.title, room);
-            cell(buf, x0 + 2, y0, '┫', pal.fg(edge));
+            cell(buf, x0 + 2, y0, open, pal.fg(edge));
             let title_style = pal.bold(if self.hot { pal.pink } else { pal.dim });
             let end = put(
                 buf,
@@ -508,11 +537,11 @@ impl NeonBox<'_> {
                 room + 2,
                 title_style,
             );
-            cell(buf, end, y0, '┣', pal.fg(edge));
+            cell(buf, end, y0, close, pal.fg(edge));
             if let (Some(tag), Some(tag_x)) = (self.tag, self.tag_x(area)) {
                 let tag_w = width(tag) + 2;
                 {
-                    cell(buf, tag_x, y0, '┫', pal.fg(edge));
+                    cell(buf, tag_x, y0, open, pal.fg(edge));
                     put(
                         buf,
                         tag_x + 1,
@@ -521,7 +550,7 @@ impl NeonBox<'_> {
                         tag_w,
                         pal.fg(pal.dim),
                     );
-                    cell(buf, tag_x + 1 + tag_w, y0, '┣', pal.fg(edge));
+                    cell(buf, tag_x + 1 + tag_w, y0, close, pal.fg(edge));
                 }
             }
         }
@@ -537,6 +566,19 @@ impl NeonBox<'_> {
 /// indeterminate sweep.
 pub fn bar(buf: &mut Buffer, pal: &Palette, x: u16, y: u16, w: u16, frac: Option<f32>, fx: Fx) {
     if w == 0 {
+        return;
+    }
+    if pal.classic {
+        let filled = frac
+            .map_or(0.0, |f| f.clamp(0.0, 1.0) * f32::from(w))
+            .round() as u16;
+        for i in 0..w {
+            if i < filled {
+                cell(buf, x + i, y, '━', pal.fg(pal.cyan));
+            } else {
+                cell(buf, x + i, y, '─', pal.fg(pal.faint));
+            }
+        }
         return;
     }
     let t = fx.time();

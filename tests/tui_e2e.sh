@@ -75,7 +75,7 @@ start_picker() {
     drv new-session -d -s p -x "${1:-100}" -y "${2:-30}" \
         "env -u TMUX TMUX_TMPDIR='$WORK' XDG_CONFIG_HOME='$CFG' TERM=xterm-256color COLORTERM=truecolor \
          '$BIN' >'$WORK/action'; echo \$? >'$WORK/rc'; sleep 600"
-    wait_screen 'SESSIONS|TMUX//PICKER|NO SIGNAL' 8 || {
+    wait_screen 'SESSIONS|TMUX//PICKER|NO SIGNAL|tmux-picker ·' 8 || {
         fail "start picker" "never drew"
         echo "    (screen:)"
         screen | sed '/^ *$/d; s/^/    | /'
@@ -373,6 +373,26 @@ if start_picker; then
         fail "256-colour mode" "truecolor escapes present"
     fi
     keys q
+fi
+config 'timeout_secs = 0'
+
+echo "Test: classic style draws the plain look and still navigates"
+config 'timeout_secs = 0' '[theme]' 'style = "classic"'
+if start_picker; then
+    out="$(drv capture-pane -e -p -t p)"
+    plain="$(screen)"
+    if grep -q 'tmux-picker · 3 sessions · 0 attached' <<<"$plain" \
+        && grep -q '╭' <<<"$plain" \
+        && ! grep -qE 'NETRUNNER|SELECT TARGET|░|┏' <<<"$plain" \
+        && grep -qE '\[(38|48);5;(3|6|15)m|\[(9[0-7]|3[0-7])m' <<<"$out"; then
+        pass "classic look: plain words, thin borders, ANSI colours"
+    else
+        fail "classic look" "$(sed -n 1,4p <<<"$plain")"
+    fi
+    keys o o o
+    if wait_screen 'sort: by name' 3; then pass "classic status shows the sort"; else fail "classic sort" "no 'sort: by name'"; fi
+    keys j Enter
+    expect_action "classic j ⏎" "attach:beta"
 fi
 config 'timeout_secs = 0'
 

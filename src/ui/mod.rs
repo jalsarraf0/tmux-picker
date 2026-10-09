@@ -28,6 +28,98 @@ const FRAME: Duration = Duration::from_millis(100);
 /// Tick without effects: only the countdown and clock move.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
+/// Fixed wording and separators for one look.
+struct Words {
+    /// Between status items.
+    sep: &'static str,
+    /// Between a label and its value ("FEED ▸ main", "name: ").
+    to: &'static str,
+    /// Countdown → the session it will attach.
+    arrow: &'static str,
+    sessions: &'static str,
+    preview: &'static str,
+    windows: &'static str,
+    preview_tag: &'static str,
+    windows_tag: &'static str,
+    blank: &'static str,
+    no_signal: &'static str,
+    manual: &'static str,
+    auto: &'static str,
+    filter: &'static str,
+    new_session: &'static str,
+    rename: &'static str,
+    kill: &'static str,
+    matches: &'static str,
+    kill_hint: &'static str,
+    auto_off: &'static str,
+    help_title: &'static str,
+    help_close: &'static str,
+    kill_title: &'static str,
+    kill_confirm: &'static str,
+    /// Link column: header, attached glyph + text, detached glyph.
+    link_head: &'static str,
+    linked: (&'static str, &'static str),
+    unlinked: &'static str,
+}
+
+const CYBER: Words = Words {
+    sep: " ░ ",
+    to: " ▸ ",
+    arrow: " ▸ ",
+    sessions: "SESSIONS",
+    preview: "FEED",
+    windows: "WINDOWS",
+    preview_tag: "● LIVE ░ ⇥ WINDOWS",
+    windows_tag: "● LIVE ░ ⇥ FEED",
+    blank: "░ BLANK PANE ░",
+    no_signal: " ◢◤ NO SIGNAL ◢◤ ",
+    manual: "MANUAL",
+    auto: "AUTO-ATTACH",
+    filter: "FILTER",
+    new_session: "NEW SESSION",
+    rename: "RENAME",
+    kill: "TERMINATE",
+    matches: "MATCH",
+    kill_hint: " ? ░ y ▸ confirm ░ any other key ▸ abort",
+    auto_off: "auto-attach off ░ ⏎ to jack in",
+    help_title: "COMMAND REFERENCE",
+    help_close: "ESC / ? / Q ▸ CLOSE",
+    kill_title: "TERMINATE SESSION",
+    kill_confirm: "Y ▸ CONFIRM ░ ANY OTHER KEY ▸ ABORT",
+    link_head: "LINK",
+    linked: ("◆", " LINKED"),
+    unlinked: "◇",
+};
+
+const CLASSIC: Words = Words {
+    sep: " · ",
+    to: ": ",
+    arrow: " → ",
+    sessions: "sessions",
+    preview: "preview",
+    windows: "windows",
+    preview_tag: "tab: windows",
+    windows_tag: "tab: preview",
+    blank: "(blank pane)",
+    no_signal: "no preview",
+    manual: "manual",
+    auto: "auto-attach",
+    filter: "filter",
+    new_session: "new session",
+    rename: "rename",
+    kill: "kill",
+    matches: "match",
+    kill_hint: "? · y: confirm · any other key: abort",
+    auto_off: "auto-attach off · enter to attach",
+    help_title: "keys",
+    help_close: "esc / ? / q: close",
+    kill_title: "kill session",
+    kill_confirm: "y: confirm · any other key: abort",
+    link_head: "ATTACHED",
+    linked: ("●", " yes"),
+    unlinked: "○",
+};
+
 /// Renderer state that outlives a frame: the resolved palette, the
 /// animation clock, and strings that never change while the picker runs.
 pub struct Ui {
@@ -61,6 +153,11 @@ impl Ui {
         self.pal = Palette::new(theme);
     }
 
+    /// Wording for the active look.
+    fn words(&self) -> &'static Words {
+        if self.pal.classic { &CLASSIC } else { &CYBER }
+    }
+
     /// How often the picker loop should redraw and tick.
     pub fn frame_interval(&self) -> Duration {
         if self.pal.animate { FRAME } else { IDLE_TICK }
@@ -79,7 +176,7 @@ impl Ui {
         let pal = &self.pal;
         let fx = Fx { t, on: pal.animate };
         buf.set_style(area, Style::new().bg(pal.bg_color()).fg(pal.c(pal.text)));
-        let a = layout(area, app);
+        let a = layout(area, app, pal.classic);
         if let Some(r) = a.banner {
             self.draw_banner(buf, r, app, fx);
         }
@@ -106,7 +203,7 @@ impl Ui {
 
     /// The visible-list index under a mouse position, if it is on a row.
     pub fn session_at(&self, app: &App, area: Rect, column: u16, row: u16) -> Option<usize> {
-        let a = layout(area, app);
+        let a = layout(area, app, self.pal.classic);
         let (y0, rows) = list_rows(&a);
         let s = a.sessions;
         if row < y0 || row >= y0 + rows || column < s.x || column >= s.right() {
@@ -184,7 +281,7 @@ impl Ui {
     fn draw_status(&self, buf: &mut Buffer, r: Rect, app: &App, fx: Fx, compact: bool) {
         let pal = &self.pal;
         let w = r.width;
-        let pulse = if fx.on {
+        let pulse = if fx.on && !pal.classic {
             (fx.t * 45.0) % (f32::from(w) + 30.0) - 15.0
         } else {
             -100.0
@@ -194,8 +291,12 @@ impl Ui {
             cell(buf, r.x + i, r.y, '─', pal.fg(lerp(pal.cyan, pal.faint, d)));
         }
         let (text, color) = status_text(app, pal);
-        let mut x = put(buf, r.x + 2, r.y, "◢◤", w, pal.bold(pal.pink));
-        if compact {
+        let mut x = if pal.classic {
+            put(buf, r.x + 1, r.y, " tmux-picker ·", w, pal.bold(pal.pink))
+        } else {
+            put(buf, r.x + 2, r.y, "◢◤", w, pal.bold(pal.pink))
+        };
+        if compact && !pal.classic {
             x = put(buf, x, r.y, " TMUX//PICKER ░", w, pal.bold(pal.pink));
         }
         let room = r.right().saturating_sub(x + 2);
@@ -229,7 +330,7 @@ impl Ui {
                 format!("{shown}/{total}")
             };
             NeonBox {
-                title: "SESSIONS",
+                title: self.words().sessions,
                 tag: Some(&tag),
                 hot: matches!(app.mode, Mode::Pick | Mode::Filter),
                 stops: None,
@@ -244,11 +345,20 @@ impl Ui {
         };
         let cols = Columns::new(x0, cw);
         if a.header && boxed {
-            cols.header(buf, pal, r.y + 1);
+            cols.header(buf, pal, r.y + 1, self.words());
         }
 
         if shown == 0 {
             let body = Rect::new(r.x + 1, y0, r.width.saturating_sub(2), rows);
+            if pal.classic {
+                let msg = if app.filter.is_empty() {
+                    String::from("no sessions")
+                } else {
+                    format!("nothing matches /{}", app.filter)
+                };
+                centered(buf, body, body.y + rows / 2, &msg, pal.fg(pal.dim));
+                return;
+            }
             rain(buf, pal, body, fx, 3);
             let msg = if app.filter.is_empty() {
                 String::from("no sessions")
@@ -297,7 +407,7 @@ impl Ui {
                 );
                 self.selection_band(buf, band, boxed, fx);
             }
-            cols.row(buf, pal, y, vis + 1, session, selected);
+            cols.row(buf, pal, self.words(), (y, vis + 1), session, selected);
         }
 
         if boxed && shown > usize::from(rows) && rows > 0 {
@@ -318,6 +428,10 @@ impl Ui {
     /// slow light sweep.
     fn selection_band(&self, buf: &mut Buffer, band: Rect, caps: bool, fx: Fx) {
         let pal = &self.pal;
+        if pal.classic {
+            fill_bg(buf, band, pal.c(pal.hilite));
+            return;
+        }
         let sweep = fx
             .on
             .then(|| (fx.t * 32.0) % (f32::from(band.width) + 80.0) - 8.0);
@@ -346,9 +460,16 @@ impl Ui {
     fn draw_preview(&self, buf: &mut Buffer, r: Rect, app: &App, fx: Fx) {
         let pal = &self.pal;
         let name = app.selected_name().unwrap_or("");
+        let words = self.words();
         let (title, tag) = match app.preview_mode {
-            PreviewMode::Summary => (format!("FEED ▸ {name}"), "● LIVE ░ ⇥ WINDOWS"),
-            PreviewMode::WindowsList => (format!("WINDOWS ▸ {name}"), "● LIVE ░ ⇥ FEED"),
+            PreviewMode::Summary => (
+                format!("{}{}{name}", words.preview, words.to),
+                words.preview_tag,
+            ),
+            PreviewMode::WindowsList => (
+                format!("{}{}{name}", words.windows, words.to),
+                words.windows_tag,
+            ),
         };
         let pane_box = NeonBox {
             title: &title,
@@ -357,7 +478,7 @@ impl Ui {
             stops: None,
         };
         pane_box.render(buf, pal, r);
-        if let Some(x) = pane_box.tag_x(r) {
+        if let Some(x) = pane_box.tag_x(r).filter(|_| !pal.classic) {
             let dot = if fx.blink(0.8) { pal.red } else { pal.faint };
             cell(buf, x + 2, r.y, '●', pal.bold(dot));
         }
@@ -399,13 +520,7 @@ impl Ui {
                         put(buf, body.x, body.y + i, line, body.width, pal.fg(col));
                     }
                 }
-                Some(_) => centered(
-                    buf,
-                    body,
-                    body.y + rows / 2,
-                    "░ BLANK PANE ░",
-                    pal.fg(pal.dim),
-                ),
+                Some(_) => centered(buf, body, body.y + rows / 2, words.blank, pal.fg(pal.dim)),
                 None => self.no_signal(buf, body, "capture unavailable", fx),
             },
             PreviewMode::WindowsList => match app.preview_windows.as_deref() {
@@ -452,10 +567,13 @@ impl Ui {
 
     fn no_signal(&self, buf: &mut Buffer, body: Rect, why: &str, fx: Fx) {
         let pal = &self.pal;
-        rain(buf, pal, body, fx, 11);
+        if !pal.classic {
+            rain(buf, pal, body, fx, 11);
+        }
         if body.height >= 2 {
             let mid = body.y + body.height / 2;
-            centered(buf, body, mid - 1, " ◢◤ NO SIGNAL ◢◤ ", pal.bold(pal.pink));
+            let headline = self.words().no_signal;
+            centered(buf, body, mid - 1, headline, pal.bold(pal.pink));
             centered(buf, body, mid, &format!(" {why} "), pal.fg(pal.dim));
         }
     }
@@ -466,17 +584,23 @@ impl Ui {
 
     fn draw_gauge(&self, buf: &mut Buffer, r: Rect, app: &App, fx: Fx) {
         let pal = &self.pal;
+        let words = self.words();
         let rename_title;
         let (title, hot, stops) = match app.mode {
-            Mode::Pick | Mode::Help if app.timeout_secs == 0 => ("MANUAL", false, None),
-            Mode::Pick | Mode::Help => ("AUTO-ATTACH", app.mode == Mode::Pick, None),
-            Mode::Filter => ("FILTER", true, None),
-            Mode::NewInput => ("NEW SESSION", true, None),
+            Mode::Pick | Mode::Help if app.timeout_secs == 0 => (words.manual, false, None),
+            Mode::Pick | Mode::Help => (words.auto, app.mode == Mode::Pick, None),
+            Mode::Filter => (words.filter, true, None),
+            Mode::NewInput => (words.new_session, true, None),
             Mode::Rename => {
-                rename_title = format!("RENAME ▸ {}", app.rename_target.as_deref().unwrap_or(""));
+                rename_title = format!(
+                    "{}{}{}",
+                    words.rename,
+                    words.to,
+                    app.rename_target.as_deref().unwrap_or("")
+                );
                 (rename_title.as_str(), true, None)
             }
-            Mode::ConfirmKill => ("TERMINATE", true, Some((pal.red, pal.pink))),
+            Mode::ConfirmKill => (words.kill, true, Some((pal.red, pal.pink))),
         };
         let (mut x, y, mut w) = if r.height >= 3 {
             NeonBox {
@@ -491,7 +615,12 @@ impl Ui {
             (r.x + 1, r.y, r.width.saturating_sub(2))
         };
         if r.height < 3 {
-            let end = put(buf, x, y, &format!("◢ {title} ▸ "), w, pal.bold(pal.pink));
+            let lead = if pal.classic {
+                format!("{title}: ")
+            } else {
+                format!("◢ {title} ▸ ")
+            };
+            let end = put(buf, x, y, &lead, w, pal.bold(pal.pink));
             w = w.saturating_sub(end - x);
             x = end;
         }
@@ -499,9 +628,10 @@ impl Ui {
             Mode::Pick | Mode::Help => self.countdown(buf, x, y, w, app, fx),
             Mode::Filter => {
                 let right = format!(
-                    "{}/{} MATCH",
+                    "{}/{} {}",
                     app.filtered_indices.len(),
-                    app.sessions.len()
+                    app.sessions.len(),
+                    words.matches
                 );
                 self.prompt(buf, (x, y, w), "/", &app.filter, Some(&right), None, fx);
             }
@@ -509,7 +639,7 @@ impl Ui {
                 self.prompt(
                     buf,
                     (x, y, w),
-                    "name ▸ ",
+                    &format!("name{}", words.to),
                     &app.input,
                     None,
                     app.input_error.as_deref(),
@@ -520,7 +650,7 @@ impl Ui {
                 self.prompt(
                     buf,
                     (x, y, w),
-                    "new name ▸ ",
+                    &format!("new name{}", words.to),
                     &app.input,
                     None,
                     app.input_error.as_deref(),
@@ -531,14 +661,7 @@ impl Ui {
                 let target = app.kill_target.as_deref().unwrap_or("?");
                 let x = put(buf, x, y, "✗ kill ", w, pal.bold(pal.red));
                 let x = put(buf, x, y, target, w, pal.bold(pal.white));
-                put(
-                    buf,
-                    x,
-                    y,
-                    " ? ░ y ▸ confirm ░ any other key ▸ abort",
-                    w,
-                    pal.fg(pal.dim),
-                );
+                put(buf, x, y, words.kill_hint, w, pal.fg(pal.dim));
             }
         }
     }
@@ -546,7 +669,7 @@ impl Ui {
     fn countdown(&self, buf: &mut Buffer, x: u16, y: u16, w: u16, app: &App, fx: Fx) {
         let pal = &self.pal;
         if app.timeout_secs == 0 {
-            let info = "auto-attach off ░ ⏎ to jack in";
+            let info = self.words().auto_off;
             let bar_w = w.saturating_sub(width(info) + 2).max(4).min(w);
             bar(buf, pal, x, y, bar_w, None, fx);
             put(
@@ -581,7 +704,7 @@ impl Ui {
             buf,
             ix,
             y,
-            " ▸ ",
+            self.words().arrow,
             (x + w).saturating_sub(ix),
             pal.fg(pal.pink),
         );
@@ -641,26 +764,23 @@ impl Ui {
 
     fn draw_footer(&self, buf: &mut Buffer, r: Rect, app: &App, t: f32) {
         let pal = &self.pal;
-        fill_bg(buf, r, pal.c(pal.faint));
-        let mut x = put(
-            buf,
-            r.x + 1,
-            r.y,
-            &format!("◢ T+{} ◣", mmss(t)),
-            r.width,
-            pal.bold(pal.pink),
-        );
-        x += 1;
+        let mut x = if pal.classic {
+            r.x + 1
+        } else {
+            fill_bg(buf, r, pal.c(pal.faint));
+            let clock = format!("◢ T+{} ◣", mmss(t));
+            put(buf, r.x + 1, r.y, &clock, r.width, pal.bold(pal.pink)) + 1
+        };
         let right = format!("tmux-picker v{VERSION} ");
         let right_w = width(&right);
         let limit = r.right().saturating_sub(right_w + 1);
-        for (i, (key, label)) in hints(app).iter().enumerate() {
+        for (i, (key, label)) in hints(app, pal.classic).iter().enumerate() {
             let need = width(key) + 1 + width(label) + if i > 0 { 3 } else { 0 };
             if x + need > limit {
                 break;
             }
             if i > 0 {
-                x = put(buf, x, r.y, " ░ ", 3, pal.fg(pal.dim));
+                x = put(buf, x, r.y, self.words().sep, 3, pal.fg(pal.dim));
             }
             x = put(buf, x, r.y, key, need, pal.bold(pal.white));
             x = put(buf, x + 1, r.y, label, need, pal.fg(pal.text));
@@ -707,6 +827,17 @@ impl Ui {
         if w < 4 || h < 3 {
             return card;
         }
+        if pal.classic {
+            let stops = (edge != pal.pink).then_some((edge, edge));
+            NeonBox {
+                title,
+                tag: None,
+                hot: true,
+                stops,
+            }
+            .render(buf, pal, card);
+            return card;
+        }
         let span = f32::from(w - 1);
         for i in 0..w {
             let col = pal.fg(gradient(&[edge, pal.purple, edge], f32::from(i) / span));
@@ -741,7 +872,7 @@ impl Ui {
             col_h(&sections)
         };
         let size = (if two_col { 78 } else { 40 }, body_h as u16 + 5);
-        let card = self.card(buf, area, size, pal.pink, "COMMAND REFERENCE", fx);
+        let card = self.card(buf, area, size, pal.pink, self.words().help_title, fx);
         let draw_col = |buf: &mut Buffer, secs: &[HelpSection], x: u16, w: u16| {
             let mut y = card.y + 3;
             for (title, rows) in secs {
@@ -781,7 +912,7 @@ impl Ui {
                 buf,
                 card,
                 card.bottom() - 2,
-                "ESC / ? / Q ▸ CLOSE",
+                self.words().help_close,
                 pal.bold(pal.cyan),
             );
         }
@@ -789,7 +920,7 @@ impl Ui {
 
     fn draw_kill(&self, buf: &mut Buffer, area: Rect, app: &App, fx: Fx) {
         let pal = &self.pal;
-        let card = self.card(buf, area, (58, 9), pal.red, "TERMINATE SESSION", fx);
+        let card = self.card(buf, area, (58, 9), pal.red, self.words().kill_title, fx);
         let target = app.kill_target.as_deref().unwrap_or("?");
         centered(
             buf,
@@ -810,7 +941,7 @@ impl Ui {
                 buf,
                 card,
                 card.bottom() - 2,
-                "Y ▸ CONFIRM ░ ANY OTHER KEY ▸ ABORT",
+                self.words().kill_confirm,
                 pal.bold(pal.yellow),
             );
         }
@@ -835,7 +966,7 @@ struct Areas {
 
 /// Responsive layout. Wide terminals put the live feed beside the list;
 /// short ones drop the banner, then the boxed gauge, then the preview.
-fn layout(area: Rect, app: &App) -> Areas {
+fn layout(area: Rect, app: &App, classic: bool) -> Areas {
     let (w, h) = (area.width, area.height);
     let mut a = Areas::default();
     let mut top = area.y;
@@ -844,7 +975,7 @@ fn layout(area: Rect, app: &App) -> Areas {
         bottom -= 1;
         a.footer = Some(Rect::new(area.x, bottom, w, 1));
     }
-    if h >= 22 && w >= 64 {
+    if !classic && h >= 22 && w >= 64 {
         a.banner = Some(Rect::new(area.x, top, w, 3));
         top += 3;
     }
@@ -965,7 +1096,7 @@ impl Columns {
         self.link_x() + if self.link_text { 9 } else { 2 }
     }
 
-    fn header(&self, buf: &mut Buffer, pal: &Palette, y: u16) {
+    fn header(&self, buf: &mut Buffer, pal: &Palette, y: u16, words: &Words) {
         let style = pal.bold(pal.dim);
         put(buf, self.x + 2, y, "##", 2, style);
         put(
@@ -983,7 +1114,7 @@ impl Columns {
             put(buf, self.cmd_x(), y, "PROCESS", COL_CMD, style);
         }
         if self.link_text {
-            put(buf, self.link_x(), y, "LINK", 8, style);
+            put(buf, self.link_x(), y, words.link_head, 8, style);
         }
         if self.act {
             put(buf, self.act_x(), y, "ACTIVITY", COL_ACT, style);
@@ -994,18 +1125,20 @@ impl Columns {
         &self,
         buf: &mut Buffer,
         pal: &Palette,
-        y: u16,
-        number: usize,
+        words: &Words,
+        (y, number): (u16, usize),
         s: &Session,
         selected: bool,
     ) {
         let stale = s.is_stale();
-        // Muted colours would sink into the selection beam; lift them.
-        let muted = |c: Rgb| if selected { pal.text } else { c };
+        // Muted colours would sink into the selection band; lift them.
+        let lifted = if pal.classic { pal.white } else { pal.text };
+        let muted = |c: Rgb| if selected { lifted } else { c };
         // Selector + 1-indexed number within the visible list, so digit
         // selection lines up with what the user sees.
         if selected {
-            put(buf, self.x, y, "▶", 1, pal.bold(pal.white));
+            let arrow = if pal.classic { pal.cyan } else { pal.white };
+            put(buf, self.x, y, "▶", 1, pal.bold(arrow));
         }
         let num_style = if selected {
             pal.bold(pal.white)
@@ -1073,9 +1206,9 @@ impl Columns {
             );
         }
         let (glyph, text) = if s.attached {
-            ("◆", " LINKED")
+            words.linked
         } else {
-            ("◇", "")
+            (words.unlinked, "")
         };
         let link_col = if s.attached {
             pal.green
@@ -1129,6 +1262,9 @@ fn status_text(app: &App, pal: &Palette) -> (String, Rgb) {
         return (flash.clone(), pal.cyan);
     }
     let n = app.sessions.len();
+    if pal.classic {
+        return classic_status_text(app, pal);
+    }
     match app.mode {
         Mode::Pick => {
             let linked = app.sessions.iter().filter(|s| s.attached).count();
@@ -1158,8 +1294,52 @@ fn status_text(app: &App, pal: &Palette) -> (String, Rgb) {
     }
 }
 
-fn hints(app: &App) -> &'static [(&'static str, &'static str)] {
+/// Status line for the classic look: plain words, `·` separators.
+fn classic_status_text(app: &App, pal: &Palette) -> (String, Rgb) {
+    let n = app.sessions.len();
     match app.mode {
+        Mode::Pick => {
+            let linked = app.sessions.iter().filter(|s| s.attached).count();
+            let mut text = format!("{n} sessions · {linked} attached");
+            if app.sort_mode != SortMode::Default {
+                text.push_str(&format!(" · sort: {}", app.sort_mode.label()));
+            }
+            if !app.filter.is_empty() {
+                text.push_str(&format!(" · filter: /{}", app.filter));
+            }
+            (text, pal.text)
+        }
+        Mode::Filter => (
+            format!("filter · {}/{n} match", app.filtered_indices.len()),
+            pal.yellow,
+        ),
+        Mode::NewInput => (String::from("new session · enter a name"), pal.yellow),
+        Mode::Rename => (
+            format!("rename · {}", app.rename_target.as_deref().unwrap_or("")),
+            pal.yellow,
+        ),
+        Mode::ConfirmKill => (
+            format!("kill · {}", app.kill_target.as_deref().unwrap_or("?")),
+            pal.red,
+        ),
+        Mode::Help => (String::from("help"), pal.yellow),
+    }
+}
+
+fn hints(app: &App, classic: bool) -> &'static [(&'static str, &'static str)] {
+    match app.mode {
+        Mode::Pick if classic => &[
+            ("⏎", "attach"),
+            ("?", "help"),
+            ("/", "filter"),
+            ("n", "new"),
+            ("K", "kill"),
+            ("r", "rename"),
+            ("o", "sort"),
+            ("y", "yank"),
+            ("tab", "preview"),
+            ("q", "shell"),
+        ],
         Mode::Pick => &[
             ("⏎", "attach"),
             ("?", "help"),
@@ -1582,6 +1762,111 @@ mod tests {
             .expect("row rendered");
         assert_eq!(ui.session_at(&app, area, 20, y), Some(2));
         assert_eq!(ui.session_at(&app, area, 20, 0), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Classic style
+    // -----------------------------------------------------------------------
+
+    fn classic() -> Ui {
+        frozen(&Theme::classic(), true)
+    }
+
+    /// Nothing cyberpunk survives in the classic frame, in any mode.
+    #[test]
+    fn classic_style_drops_the_neon_hud() {
+        let mut app = App::new(sessions(6), &Config::default());
+        app.preview = Some("$ make\nok".into());
+        let neon = [
+            "NETRUNNER",
+            "GRID",
+            "SELECT TARGET",
+            "LINKED",
+            "FEED",
+            "NO SIGNAL",
+            "jack in",
+            "TERMINATE",
+            "COMMAND REFERENCE",
+            "T+",
+            "◢",
+            "◤",
+            "░",
+            "┃",
+            "┏",
+            "┫",
+        ];
+        for mode in [Mode::Pick, Mode::Help, Mode::ConfirmKill, Mode::Filter] {
+            app.mode = mode.clone();
+            app.kill_target = Some("sess-00".into());
+            let text = dump(&render(&classic(), &app, 100, 30, 5.0));
+            for word in neon {
+                assert!(!text.contains(word), "{mode:?} frame has {word:?}:\n{text}");
+            }
+            assert!(text.contains('╭') && text.contains("sessions"), "{text}");
+        }
+    }
+
+    #[test]
+    fn classic_style_uses_terminal_colours() {
+        let mut app = App::new(sessions(6), &Config::default());
+        app.move_down();
+        let buf = render(&classic(), &app, 100, 30, 5.0);
+        let name = |vis: usize| app.sessions[app.filtered_indices[vis]].name.clone();
+        let line = |y: u16| {
+            (0..100)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        let row_of = |name: &str| {
+            (0..30)
+                .find(|&y| line(y).contains(name))
+                .expect("row rendered")
+        };
+        let (sel, plain) = (row_of(&name(1)), row_of(&name(2)));
+        // A solid band in a fixed grey that terminal themes don't remap ...
+        for x in [2, 50, 97] {
+            assert_eq!(buf[(x, sel)].bg, Color::Rgb(78, 78, 78), "band col {x}");
+        }
+        // ... and the terminal's own background everywhere else.
+        assert_eq!(buf[(50, plain)].bg, Color::Reset);
+        assert_eq!(buf[(1, sel)].symbol(), " ", "no neon edge caps");
+        // Running commands in the terminal's yellow (ANSI 3).
+        let cmd = (0..96)
+            .find(|&x| {
+                (0..4)
+                    .map(|i| buf[(x + i, plain)].symbol())
+                    .collect::<String>()
+                    == "bash"
+            })
+            .expect("command column");
+        assert_eq!(buf[(cmd, plain)].fg, Color::Indexed(3));
+    }
+
+    #[test]
+    fn classic_layout_has_no_banner_and_clicks_still_map() {
+        let app = App::new(sessions(5), &Config::default());
+        let ui = classic();
+        let area = Rect::new(0, 0, 100, 30);
+        let buf = render(&ui, &app, 100, 30, 5.0);
+        let top: String = (0..100).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(top.contains("tmux-picker"), "status line first: {top:?}");
+        let y = (0..30)
+            .find(|&y| {
+                let row: String = (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                row.contains("sess-02")
+            })
+            .expect("row rendered");
+        assert_eq!(ui.session_at(&app, area, 20, y), Some(2));
+    }
+
+    #[test]
+    fn classic_frames_do_not_change() {
+        let app = App::new(sessions(4), &Config::default());
+        let ui = classic();
+        assert_eq!(
+            render(&ui, &app, 100, 30, 3.0),
+            render(&ui, &app, 100, 30, 9.5)
+        );
     }
 
     /// The selected row must stand out from the CRT-shaded rows around it,

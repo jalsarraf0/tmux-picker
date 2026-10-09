@@ -6,7 +6,8 @@
 #   2. cargo build --release
 #   3. install binary to ~/.local/bin/tmux-picker
 #   4. install shell hook to ~/.bashrc.d/tmux-autoattach.sh
-#   5. set trigger_mode (always vs ssh_only) in config.toml
+#   5. set trigger_mode (always vs ssh_only) and the theme style
+#      (cyberpunk vs classic) in config.toml
 #
 # Idempotent: re-running upgrades the binary and overwrites the hook.
 # Non-destructive: never touches existing tmux sessions or user dotfiles
@@ -18,6 +19,8 @@
 #   scripts/install.sh                          interactive prompts (humans, tty)
 #   scripts/install.sh --trigger-mode=always     SSH logins AND local terminals
 #   scripts/install.sh --trigger-mode=ssh_only   SSH logins only (servers)
+#   scripts/install.sh --theme=cyberpunk         neon HUD look (the default)
+#   scripts/install.sh --theme=classic           plain terminal look, your terminal's colours
 #   scripts/install.sh --auto-deps               install missing tmux/cargo automatically
 #   scripts/install.sh --no-auto-deps            fail fast on missing deps, don't ask
 #
@@ -48,10 +51,13 @@ die()  { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 TRIGGER_MODE="${TMUX_PICKER_TRIGGER_MODE:-}"
 AUTO_DEPS="${TMUX_PICKER_AUTO_DEPS:-}"
+THEME_STYLE="${TMUX_PICKER_THEME:-}"
 for arg in "$@"; do
     case "$arg" in
         --trigger-mode=*) TRIGGER_MODE="${arg#*=}" ;;
         --trigger-mode)   die "--trigger-mode requires a value: --trigger-mode=always or --trigger-mode=ssh_only" ;;
+        --theme=*)        THEME_STYLE="${arg#*=}" ;;
+        --theme)          die "--theme requires a value: --theme=cyberpunk or --theme=classic" ;;
         --auto-deps)      AUTO_DEPS="yes" ;;
         --no-auto-deps)   AUTO_DEPS="no" ;;
     esac
@@ -59,6 +65,10 @@ done
 
 if [[ -n "$TRIGGER_MODE" && "$TRIGGER_MODE" != "always" && "$TRIGGER_MODE" != "ssh_only" ]]; then
     die "--trigger-mode must be 'always' or 'ssh_only', got '$TRIGGER_MODE'"
+fi
+
+if [[ -n "$THEME_STYLE" && "$THEME_STYLE" != "cyberpunk" && "$THEME_STYLE" != "classic" ]]; then
+    die "--theme must be 'cyberpunk' or 'classic', got '$THEME_STYLE'"
 fi
 
 if [[ -n "$AUTO_DEPS" && "$AUTO_DEPS" != "yes" && "$AUTO_DEPS" != "no" ]]; then
@@ -89,6 +99,26 @@ then re-run with the matching --trigger-mode flag."
     fi
 fi
 log "trigger_mode = $TRIGGER_MODE"
+
+# The look is cosmetic and easy to change later (theme.style in
+# config.toml), so unlike trigger_mode a non-interactive run does not stop:
+# it keeps the style an existing config already has, else cyberpunk.
+if [[ -z "$THEME_STYLE" ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+        echo ""
+        echo "Which look do you want?"
+        echo "  1) Cyberpunk — neon HUD: gradient panels, glitching banner, CRT scanlines"
+        echo "  2) Classic   — plain terminal look in your terminal's own colours"
+        echo ""
+        read -rp "Choose [1/2] (default: 1): " _theme_choice
+        case "$_theme_choice" in
+            2) THEME_STYLE="classic" ;;
+            *) THEME_STYLE="cyberpunk" ;;
+        esac
+    else
+        THEME_STYLE="keep"
+    fi
+fi
 
 [[ -f "$HOOK_SRC" ]] || die "shell hook missing at $HOOK_SRC"
 
@@ -218,15 +248,50 @@ else
     printf '\ntrigger_mode = "%s"\n' "$TRIGGER_MODE" >> "$CONFIG_FILE"
 fi
 
+# effective_style — the theme.style the installed binary actually loads.
+effective_style() {
+    "$BIN_DEST" --check-config | sed -n 's/^style = "\(.*\)"$/\1/p'
+}
+
+# Set style = "..." as the first key of [theme] (adding the table when the
+# config has none), dropping any other style line in that table. Other
+# tables and every comment are left alone.
+set_theme_style() {
+    local file="$1" style="$2" tmp
+    tmp="$(mktemp "$file.XXXXXX")"
+    awk -v line="style = \"$style\"" '
+        /^[[:space:]]*\[/ {
+            in_theme = ($0 ~ /^[[:space:]]*\[theme\][[:space:]]*(#.*)?$/)
+            print
+            if (in_theme && !done) { print line; done = 1 }
+            next
+        }
+        in_theme && /^[[:space:]]*style[[:space:]]*=/ { next }
+        { print }
+        END { if (!done) { print ""; print "[theme]"; print line } }
+    ' "$file" >"$tmp" && cat "$tmp" >"$file"
+    rm -f "$tmp"
+}
+
+if [[ "$THEME_STYLE" == "keep" ]]; then
+    THEME_STYLE="$(effective_style)"
+    log "keeping theme style \"$THEME_STYLE\" (pass --theme=cyberpunk|classic to change it)"
+else
+    log "writing theme style = \"$THEME_STYLE\" to $CONFIG_FILE"
+    set_theme_style "$CONFIG_FILE" "$THEME_STYLE"
+fi
+
 # Sanity check
 "$BIN_DEST" --version >/dev/null || die "installed binary failed --version check"
 [[ "$("$BIN_DEST" --print-trigger-mode)" == "$TRIGGER_MODE" ]] \
     || die "trigger_mode did not take effect — check $CONFIG_FILE"
+[[ "$(effective_style)" == "$THEME_STYLE" ]] \
+    || die "theme style \"$THEME_STYLE\" did not take effect — check $CONFIG_FILE"
 
 log "installed:"
 log "  $BIN_DEST  ($("$BIN_DEST" --version))"
 log "  $HOOK_DEST"
-log "  $CONFIG_FILE  (trigger_mode = \"$TRIGGER_MODE\")"
+log "  $CONFIG_FILE  (trigger_mode = \"$TRIGGER_MODE\", style = \"$THEME_STYLE\")"
 log ""
 if [[ "$TRIGGER_MODE" == "always" ]]; then
     log "next SSH login OR local terminal window will land in the picker."

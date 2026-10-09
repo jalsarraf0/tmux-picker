@@ -106,7 +106,7 @@ if pid == 0:
     os.execvpe("bash", ["bash", install_sh], env)
 else:
     time.sleep(1.5)
-    os.write(fd, b"\n")
+    os.write(fd, b"\n\n")   # trigger mode, then theme: both defaults
     try:
         while os.read(fd, 4096):
             pass
@@ -140,7 +140,7 @@ if pid == 0:
     os.execvpe("bash", ["bash", install_sh], env)
 else:
     time.sleep(1.5)
-    os.write(fd, b"2\n")
+    os.write(fd, b"2\n\n")  # ssh_only, then the default theme
     try:
         while os.read(fd, 4096):
             pass
@@ -153,6 +153,122 @@ PY
         pass "interactive '2' selects ssh_only"
     else
         fail "interactive '2' selection" "got mode=$mode"
+    fi
+else
+    echo "  SKIP: python3 not available for pty simulation"
+fi
+rm -rf "$TH"
+
+# ---------------------------------------------------------------------------
+# Theme style (--theme / interactive prompt).
+# ---------------------------------------------------------------------------
+
+style_of() {  # $1: test HOME — the style the installed binary loads
+    HOME="$1" XDG_CONFIG_HOME="$1/.config" "$1/.local/bin/tmux-picker" --check-config \
+        | sed -n 's/^style = "\(.*\)"$/\1/p'
+}
+
+echo "Test T1: no --theme, non-interactive -> cyberpunk"
+TH="$(mktemp -d)"
+HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always </dev/null >/dev/null
+if [[ "$(style_of "$TH")" == "cyberpunk" ]]; then
+    pass "fresh non-interactive install is cyberpunk"
+else
+    fail "default theme" "got $(style_of "$TH")"
+fi
+rm -rf "$TH"
+
+echo "Test T2: --theme=classic, then re-run without --theme keeps it"
+TH="$(mktemp -d)"
+HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always --theme=classic </dev/null >/dev/null
+first="$(style_of "$TH")"
+HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always </dev/null >/dev/null
+second="$(style_of "$TH")"
+count=$(grep -c '^style' "$TH/.config/tmux-picker/config.toml")
+if [[ "$first" == "classic" && "$second" == "classic" && "$count" -eq 1 ]]; then
+    pass "--theme=classic applies and survives a re-run"
+else
+    fail "--theme=classic" "first=$first second=$second count=$count"
+fi
+rm -rf "$TH"
+
+echo "Test T3: switching theme on an existing config edits [theme] in place"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.config/tmux-picker"
+cat >"$TH/.config/tmux-picker/config.toml" <<'TOML'
+timeout_secs = 5
+
+[theme]
+accent = "magenta"   # keep me
+style = "cyberpunk"
+
+[markers.patterns]
+style = "S"
+TOML
+HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always --theme=classic </dev/null >/dev/null
+cfg="$TH/.config/tmux-picker/config.toml"
+check=$(HOME="$TH" XDG_CONFIG_HOME="$TH/.config" "$TH/.local/bin/tmux-picker" --check-config)
+if [[ "$(style_of "$TH")" == "classic" ]] \
+    && grep -q '^accent = "magenta"   # keep me' "$cfg" \
+    && grep -q '^style = "S"' "$cfg" \
+    && grep -q '^accent = "magenta"' <<<"$check" \
+    && grep -q '^timeout_secs = 5' "$cfg" \
+    && [[ $(grep -c '^style = "classic"' "$cfg") -eq 1 ]]; then
+    pass "theme switch keeps other keys, comments and tables"
+else
+    fail "theme switch in place" "$(cat "$cfg")"
+fi
+rm -rf "$TH"
+
+echo "Test T4: a config with no [theme] table gets one"
+TH="$(mktemp -d)"
+mkdir -p "$TH/.config/tmux-picker"
+printf 'timeout_secs = 3\n' >"$TH/.config/tmux-picker/config.toml"
+HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always --theme=classic </dev/null >/dev/null
+if [[ "$(style_of "$TH")" == "classic" ]] && grep -q '^\[theme\]' "$TH/.config/tmux-picker/config.toml"; then
+    pass "missing [theme] table is added"
+else
+    fail "add [theme]" "$(cat "$TH/.config/tmux-picker/config.toml")"
+fi
+rm -rf "$TH"
+
+echo "Test T5: --theme=bogus is rejected before installing anything"
+TH="$(mktemp -d)"
+out=$(HOME="$TH" XDG_CONFIG_HOME="$TH/.config" bash "$INSTALL_SH" --trigger-mode=always --theme=bogus </dev/null 2>&1) && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "must be 'cyberpunk' or 'classic'" <<<"$out" && [[ ! -e "$TH/.local/bin/tmux-picker" ]]; then
+    pass "invalid --theme rejected"
+else
+    fail "invalid --theme" "rc=$rc; out=$out"
+fi
+rm -rf "$TH"
+
+echo "Test T6: interactive prompt, '2' for the theme -> classic"
+TH="$(mktemp -d)"
+if command -v python3 >/dev/null; then
+    python3 - "$TH" "$INSTALL_SH" <<'PY' >/dev/null
+import pty, os, sys, time
+testhome, install_sh = sys.argv[1], sys.argv[2]
+env = dict(os.environ)
+env["HOME"] = testhome
+env["XDG_CONFIG_HOME"] = f"{testhome}/.config"
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", install_sh], env)
+else:
+    time.sleep(1.5)
+    os.write(fd, b"\n2\n")  # default trigger mode, classic theme
+    try:
+        while os.read(fd, 4096):
+            pass
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+PY
+    got="$(style_of "$TH" 2>/dev/null || echo MISSING)"
+    if [[ "$got" == "classic" ]]; then
+        pass "interactive '2' selects the classic theme"
+    else
+        fail "interactive theme choice" "got $got"
     fi
 else
     echo "  SKIP: python3 not available for pty simulation"

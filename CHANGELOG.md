@@ -6,6 +6,29 @@ git tags.
 
 ## [Unreleased]
 
+### Classic or cyberpunk
+
+- **`[theme] style = "cyberpunk" | "classic"`.** Classic is a plain preset
+  of the same picker: ANSI colours sent as palette indexes so the
+  terminal's theme shows through, the terminal's own background, thin
+  rounded borders, no banner, rain, scanlines or animation, a solid
+  grey-ramp selection bar, and plain wording ("attached", "preview",
+  "kill" for "LINKED", "FEED", "TERMINATE"). Colour keys override on top
+  of either style; values equal to the cyberpunk defaults read as the
+  classic default under classic, so an old neon starter config switches
+  cleanly.
+- **`install.sh --theme=cyberpunk|classic`** (or `TMUX_PICKER_THEME`), and
+  an interactive prompt after the trigger-mode one. A non-interactive run
+  without it keeps the config's current style (cyberpunk when new) rather
+  than refusing. The style is written as the first key of `[theme]`
+  without disturbing other keys, comments or tables, then checked with
+  `--check-config`.
+- `--init` writes `style = "cyberpunk"` and leaves the colour keys
+  commented, so changing `style` alone switches the whole look.
+- Colour name `lightgray` (alias `lightgrey`, `silver`) for ANSI 7;
+  `--check-config` used to print it as `"Gray"`, which read back as
+  `darkgray`.
+
 ### Neon UI and a faster core
 
 The picker is redrawn as a cyberpunk HUD in the style of the `update`

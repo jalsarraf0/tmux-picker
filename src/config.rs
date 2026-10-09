@@ -26,24 +26,29 @@ timeout_secs = 10
 # terminals, only firing over SSH.
 trigger_mode = "always"
 
-# Neon theme (the defaults below), styled after a cyberpunk HUD. Colour
-# values: black|red|green|yellow|blue|magenta|cyan|white, darkgray (alias
-# gray/grey), light{red,green,yellow,blue,magenta,cyan}, 256-colour indexes
-# ("196" or 196), hex like "#ff8800" / "#abc", or "reset" for the
-# terminal's own colour.
+# Look: "cyberpunk" is the neon HUD (gradient panels, a glitching banner,
+# CRT scanlines); "classic" is a plain terminal look in your terminal's own
+# colours, with thin borders and no effects.
 [theme]
-primary = "#ff2a6d"        # titles, selector, banner (neon pink)
-secondary = "#7a04eb"      # borders and gradients (violet)
-accent = "#05d9e8"         # values, numbers, cursor (cyan)
-highlight = "#f9f002"      # status line, running commands (yellow)
-success = "#39ff14"        # attached sessions, live activity (green)
-warning = "#ff003c"        # kill confirm, errors (red)
-text = "#c4bee4"           # body text
-background = "#080512"     # "reset" keeps your terminal's background
-selection_bg = "#1e0a36"   # base of the selected-row beam
-animations = true          # glitch, pulse and shimmer effects; false = static
-scanlines = true           # CRT-style alternating row shading
-color = "auto"             # "auto" | "truecolor" | "256"
+style = "cyberpunk"
+
+# Overrides on top of the style's palette; the values shown are the
+# cyberpunk ones. Colour values: black|red|green|yellow|blue|magenta|cyan|
+# white, darkgray (alias gray/grey), light{gray,red,green,yellow,blue,
+# magenta,cyan}, 256-colour indexes ("196" or 196), hex like "#ff8800" /
+# "#abc", or "reset" for the terminal's own colour.
+# primary = "#ff2a6d"        # titles, selector, banner (neon pink)
+# secondary = "#7a04eb"      # borders and gradients (violet)
+# accent = "#05d9e8"         # values, numbers, cursor (cyan)
+# highlight = "#f9f002"      # status line, running commands (yellow)
+# success = "#39ff14"        # attached sessions, live activity (green)
+# warning = "#ff003c"        # kill confirm, errors (red)
+# text = "#c4bee4"           # body text
+# background = "#080512"     # "reset" keeps your terminal's background
+# selection_bg = "#1e0a36"   # selected-row background
+# animations = true          # glitch, pulse and shimmer; classic: false
+# scanlines = true           # CRT-style row shading; classic: false
+color = "auto"               # "auto" | "truecolor" | "256"
 
 # Process markers. The first matching pattern wins; user patterns are
 # checked before the built-in defaults. Set disable_defaults to drop
@@ -216,9 +221,39 @@ impl ColorMode {
     }
 }
 
+/// The picker's overall look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeStyle {
+    /// Neon HUD: gradient panels, banner, scanlines and effects.
+    #[default]
+    Cyberpunk,
+    /// Plain terminal look: ANSI colours, thin borders, no effects.
+    Classic,
+}
+
+impl ThemeStyle {
+    /// Lowercase string used in TOML and by `install.sh --theme`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeStyle::Cyberpunk => "cyberpunk",
+            ThemeStyle::Classic => "classic",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "cyberpunk" | "neon" => Some(ThemeStyle::Cyberpunk),
+            "classic" | "plain" => Some(ThemeStyle::Classic),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Colors and effects used by the picker UI. Defaults are the neon palette.
 pub struct Theme {
+    /// Overall look; picks the palette the colour keys override.
+    pub style: ThemeStyle,
     /// Values, numbers and the input cursor (cyan).
     pub accent: Color,
     /// Kill confirm and errors (red).
@@ -246,6 +281,28 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The classic look: the terminal's own ANSI colours and background,
+    /// thin borders, no effects.
+    pub fn classic() -> Self {
+        Theme {
+            style: ThemeStyle::Classic,
+            accent: Color::Cyan,
+            warning: Color::Red,
+            // Grey-ramp 239, not ANSI 8: palettes like Solarized make
+            // "bright black" the background colour, hiding the bar.
+            selection_bg: Color::Indexed(239),
+            primary: Color::White,
+            secondary: Color::DarkGray,
+            highlight: Color::Yellow,
+            success: Color::Green,
+            text: Color::Gray,
+            background: Color::Reset,
+            animations: false,
+            scanlines: false,
+            color_mode: ColorMode::Auto,
+        }
+    }
+
     /// Every colour key in `[theme]`, in the order `to_toml` prints them.
     pub const COLOR_KEYS: [&'static str; 9] = [
         "primary",
@@ -294,6 +351,7 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Theme {
+            style: ThemeStyle::Cyberpunk,
             accent: Color::Rgb(0x05, 0xd9, 0xe8),
             warning: Color::Rgb(0xff, 0x00, 0x3c),
             selection_bg: Color::Rgb(0x1e, 0x0a, 0x36),
@@ -454,6 +512,7 @@ impl Config {
             self.trigger_mode.as_str()
         ));
         out.push_str("\n[theme]\n");
+        out.push_str(&format!("style = \"{}\"\n", self.theme.style.as_str()));
         for key in Theme::COLOR_KEYS {
             if let Some(color) = self.theme.color(key) {
                 out.push_str(&format!("{key} = {}\n", color_to_toml(color)));
@@ -484,12 +543,29 @@ fn is_legacy_default(key: &str, value: &toml::Value) -> bool {
 }
 
 fn apply_theme(table: &toml::Table, theme: &mut Theme, warnings: &mut Vec<String>) {
+    if let Some(v) = table.get("style") {
+        match v.as_str().and_then(ThemeStyle::from_str) {
+            Some(ThemeStyle::Classic) => *theme = Theme::classic(),
+            Some(ThemeStyle::Cyberpunk) => {}
+            None => warnings.push(format!(
+                "theme.style must be \"cyberpunk\" or \"classic\", got {v:?}; using default"
+            )),
+        }
+    }
+    let classic = theme.style == ThemeStyle::Classic;
+    let neon = Theme::default();
     for key in Theme::COLOR_KEYS {
         if table.get(key).is_some_and(|v| is_legacy_default(key, v)) {
             continue;
         }
         if let Some(dest) = theme.color_mut(key) {
+            let before = *dest;
             apply_color(table, key, dest, warnings);
+            // The neon starter wrote every colour out; under classic those
+            // values meant "the default" too, so keep the classic one.
+            if classic && neon.color(key) == Some(*dest) {
+                *dest = before;
+            }
         }
     }
     for (key, dest) in [
@@ -578,6 +654,7 @@ fn parse_named(s: &str) -> Option<Color> {
         "cyan" => Color::Cyan,
         "white" => Color::White,
         "darkgray" | "gray" | "grey" => Color::DarkGray,
+        "lightgray" | "lightgrey" | "silver" => Color::Gray,
         "lightred" => Color::LightRed,
         "lightgreen" => Color::LightGreen,
         "lightyellow" => Color::LightYellow,
@@ -600,6 +677,7 @@ fn color_to_toml(c: Color) -> String {
         Color::Cyan => "\"cyan\"".into(),
         Color::White => "\"white\"".into(),
         Color::DarkGray => "\"darkgray\"".into(),
+        Color::Gray => "\"lightgray\"".into(),
         Color::LightRed => "\"lightred\"".into(),
         Color::LightGreen => "\"lightgreen\"".into(),
         Color::LightYellow => "\"lightyellow\"".into(),
@@ -609,10 +687,6 @@ fn color_to_toml(c: Color) -> String {
         Color::Reset => "\"reset\"".into(),
         Color::Rgb(r, g, b) => format!("\"#{r:02x}{g:02x}{b:02x}\""),
         Color::Indexed(n) => n.to_string(),
-        // Reset and the bright "Light*" already covered above. Anything else
-        // we have not produced ourselves; fall back to debug so the user can
-        // still see what the picker has.
-        other => format!("\"{other:?}\""),
     }
 }
 
@@ -1022,6 +1096,71 @@ mod tests {
         cfg.theme.animations = false;
         cfg.theme.color_mode = ColorMode::Ansi256;
         let (back, warnings) = Config::from_str_with_warnings(&cfg.to_toml());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.theme, cfg.theme);
+    }
+
+    // -----------------------------------------------------------------------
+    // Theme style
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn style_defaults_to_cyberpunk() {
+        assert_eq!(Config::default().theme.style, ThemeStyle::Cyberpunk);
+        let cfg = Config::from_str("[theme]\nstyle = \"cyberpunk\"");
+        assert_eq!(cfg.theme, Theme::default());
+    }
+
+    #[test]
+    fn classic_style_loads_the_classic_preset() {
+        let cfg = Config::from_str("[theme]\nstyle = \"classic\"");
+        assert_eq!(cfg.theme, Theme::classic());
+        assert_eq!(cfg.theme.style, ThemeStyle::Classic);
+        assert_eq!(cfg.theme.background, Color::Reset);
+        assert!(!cfg.theme.animations && !cfg.theme.scanlines);
+    }
+
+    #[test]
+    fn classic_overrides_apply_on_top_of_the_preset() {
+        let cfg = Config::from_str("[theme]\nselection_bg = \"blue\"\nstyle = \"Classic\"");
+        assert_eq!(cfg.theme.selection_bg, Color::Blue);
+        assert_eq!(cfg.theme.accent, Theme::classic().accent);
+    }
+
+    #[test]
+    fn neon_starter_values_mean_default_under_classic() {
+        // A config written by the neon starter, then switched to classic.
+        let neon_starter = STARTER_TOML.replace("style = \"cyberpunk\"", "style = \"classic\"");
+        let uncommented: String = neon_starter
+            .lines()
+            .map(|l| {
+                l.strip_prefix("# ")
+                    .filter(|r| r.contains(" = \"#"))
+                    .unwrap_or(l)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (cfg, warnings) = Config::from_str_with_warnings(&uncommented);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg.theme.primary, Theme::classic().primary);
+        assert_eq!(cfg.theme.selection_bg, Theme::classic().selection_bg);
+        assert_eq!(cfg.theme.background, Theme::classic().background);
+    }
+
+    #[test]
+    fn unknown_style_warns_and_keeps_cyberpunk() {
+        let (cfg, warnings) = Config::from_str_with_warnings("[theme]\nstyle = \"vaporwave\"");
+        assert_eq!(cfg.theme.style, ThemeStyle::Cyberpunk);
+        assert!(warnings.iter().any(|w| w.contains("theme.style")));
+    }
+
+    #[test]
+    fn to_toml_round_trips_classic() {
+        let mut cfg = Config::from_str("[theme]\nstyle = \"classic\"\naccent = \"magenta\"");
+        cfg.theme.color_mode = ColorMode::TrueColor;
+        let out = cfg.to_toml();
+        assert!(out.contains("style = \"classic\""), "{out}");
+        let (back, warnings) = Config::from_str_with_warnings(&out);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(back.theme, cfg.theme);
     }

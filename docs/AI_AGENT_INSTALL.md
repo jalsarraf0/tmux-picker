@@ -26,16 +26,20 @@ rather than improvising.
 Install tmux-picker from https://github.com/jalsarraf0/tmux-picker by
 following that repo's README.md exactly:
 1. Clone it into ~/git/tmux-picker (or ~/src if ~/git doesn't exist).
-2. Before running anything, ask me two things and wait for both answers:
+2. Before running anything, ask me three things and wait for the answers:
    a. "Should tmux-picker run on every local terminal too, or only over
       SSH?"
    b. "If tmux or a Rust toolchain (cargo) is missing, OK to install them
       automatically (may use sudo)?"
+   c. "Cyberpunk look (neon HUD) or classic (plain, your terminal's
+      colours)?"
 3. Run `scripts/install.sh --trigger-mode=always` or
    `scripts/install.sh --trigger-mode=ssh_only` to match (a), plus
-   `--auto-deps` or `--no-auto-deps` to match (b) — e.g.
-   `scripts/install.sh --trigger-mode=always --auto-deps`. Do not run
-   install.sh without both flags, and do not choose either for me.
+   `--auto-deps` or `--no-auto-deps` to match (b) and `--theme=cyberpunk`
+   or `--theme=classic` to match (c) — e.g.
+   `scripts/install.sh --trigger-mode=always --auto-deps --theme=classic`.
+   Do not run install.sh without the first two flags, and do not choose
+   any of them for me.
 4. Check whether ~/.bashrc sources ~/.bashrc.d/*.sh; if not, add the
    snippet from the README's "Enable the auto-attach hook" section.
 5. Run `tmux-picker --version` and `tmux-picker --check-config` to confirm
@@ -49,15 +53,16 @@ Don't touch any other dotfiles or existing tmux sessions.
 ## Codex CLI
 
 ```
-codex exec "Before doing anything, ask the user two things and wait for
-both answers — do not guess either: (a) 'Should tmux-picker run on every
-local terminal, or only over SSH?' and (b) 'If tmux or a Rust toolchain is
-missing, OK to install them automatically (may use sudo)?'. Once answered,
-clone https://github.com/jalsarraf0/tmux-picker, follow its README.md to
-build and install tmux-picker via scripts/install.sh, passing
---trigger-mode=always or --trigger-mode=ssh_only to match (a) and
+codex exec "Before doing anything, ask the user three things and wait for
+the answers — do not guess any: (a) 'Should tmux-picker run on every
+local terminal, or only over SSH?', (b) 'If tmux or a Rust toolchain is
+missing, OK to install them automatically (may use sudo)?' and (c)
+'Cyberpunk look (neon HUD) or classic (plain, your terminal's colours)?'.
+Once answered, clone https://github.com/jalsarraf0/tmux-picker, follow its
+README.md to build and install tmux-picker via scripts/install.sh, passing
+--trigger-mode=always or --trigger-mode=ssh_only to match (a),
 --auto-deps or --no-auto-deps to match (b) (never run install.sh without
-both flags), ensure ~/.bashrc sources ~/.bashrc.d/*.sh (adding the
+those two) and --theme=cyberpunk or --theme=classic to match (c), ensure ~/.bashrc sources ~/.bashrc.d/*.sh (adding the
 README's snippet if it doesn't), then verify with 'tmux-picker --version'
 and 'tmux-picker --print-trigger-mode'. Report success/failure and any
 manual step still needed (e.g. starting a new SSH session or terminal

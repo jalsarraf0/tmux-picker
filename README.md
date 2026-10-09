@@ -44,10 +44,12 @@ without you lifting a finger.
   file to get out of sync.
 - **Live pane feed** — the newest lines of the highlighted session's pane,
   refreshed every second, or `Tab` for a per-window summary.
-- **Neon HUD** — gradient heavy-line panels, a glitching block-letter
-  banner, CRT scanlines and a shimmering auto-attach gauge, in truecolor
-  with an automatic 256-colour fallback. Every colour is themable and the
-  effects switch off with one key (`animations = false`).
+- **Two looks** — *cyberpunk*, a neon HUD with gradient heavy-line
+  panels, a glitching block-letter banner, CRT scanlines and a shimmering
+  auto-attach gauge (truecolor with an automatic 256-colour fallback); or
+  *classic*, a plain look in your terminal's own colours with thin borders
+  and no effects. The installer asks which you want; switch any time with
+  `style` in the config. Every colour is themable on top of either.
 - **Process markers at a glance** — 🤖 claude, 🦀 cargo, ✏️ vim/nvim, 📊 htop,
   📦 node, 🐍 python, 🌿 git — fully customizable.
 - **Quick ops** — kill (`K`, confirm-gated), rename (`r`), yank name to
@@ -166,6 +168,24 @@ bash scripts/install.sh --trigger-mode=always     # SSH + local terminals
 bash scripts/install.sh --trigger-mode=ssh_only   # SSH only
 ```
 
+Then it asks which look you want:
+
+```
+Which look do you want?
+  1) Cyberpunk — neon HUD: gradient panels, glitching banner, CRT scanlines
+  2) Classic   — plain terminal look in your terminal's own colours
+
+Choose [1/2] (default: 1):
+```
+
+or pass it as `--theme=cyberpunk` / `--theme=classic`. Unlike the trigger
+mode, a non-interactive run without `--theme` doesn't stop: it keeps the
+style your config already has, or cyberpunk on a fresh install.
+
+<p align="center">
+  <img src="docs/screenshot-classic.png" alt="tmux-picker in the classic style: plain session list, preview and footer in the terminal's own colours" width="900">
+</p>
+
 It's idempotent — re-run any time (e.g. after `git pull`) to upgrade.
 
 **Missing `tmux` or `cargo`?** Interactively it asks before installing
@@ -183,7 +203,7 @@ toolchain if `cargo` is missing (distro packages are often too old for this
 project's `edition = "2024"`).
 
 Fully hands-off, e.g. cloud-init: `bash scripts/install.sh
---trigger-mode=always --auto-deps`.
+--trigger-mode=always --theme=cyberpunk --auto-deps`.
 
 </details>
 
@@ -286,7 +306,8 @@ stderr warning — login auto-attach is never blocked.
 timeout_secs = 10          # auto-attach countdown, seconds; 0 disables it
 trigger_mode = "always"    # "always" | "ssh_only"
 
-[theme]                    # neon defaults shown
+[theme]                    # cyberpunk defaults shown
+style = "cyberpunk"        # "cyberpunk" (neon HUD) | "classic" (plain)
 primary = "#ff2a6d"        # titles, selector, banner
 secondary = "#7a04eb"      # borders, gradients
 accent = "#05d9e8"         # values, numbers, cursor
@@ -295,7 +316,7 @@ success = "#39ff14"        # attached sessions, live activity
 warning = "#ff003c"        # kill confirm, errors
 text = "#c4bee4"
 background = "#080512"     # "reset" keeps your terminal's background
-selection_bg = "#1e0a36"   # base of the selected-row beam
+selection_bg = "#1e0a36"   # selected row (cyberpunk: base of the beam)
 animations = true          # glitch / pulse / shimmer; false = static frame
 scanlines = true           # CRT shading on alternate rows
 color = "auto"             # "auto" | "truecolor" | "256"
@@ -315,6 +336,15 @@ terminal supports it. Over slow links, `animations = false` cuts redraw
 traffic to what the old static UI sent. A starter file from an older
 release (`accent = "cyan"`, `warning = "red"`, `selection_bg = "darkgray"`)
 keeps getting the neon defaults.
+
+`style = "classic"` swaps in a plain preset: ANSI colours sent as palette
+indexes (so your terminal theme shows through), the terminal's own
+background, thin rounded borders, no banner, scanlines or animation, and
+plain wording. The selected row sits on grey-ramp 239 rather than ANSI 8,
+which some palettes (Solarized) make the same as the background. Colour
+keys still override on top; values equal to the cyberpunk defaults (what
+the neon starter file wrote out) are read as "use the classic default", so
+switching an old config to classic just works.
 
 `tmux-picker --init` writes a fully-commented starter file; `tmux-picker
 --check-config` prints parse warnings plus the effective config.
