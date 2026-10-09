@@ -289,14 +289,14 @@ row_of() { screen | grep -n "$1" | head -1 | cut -d: -f1; }
 echo "Test: double-click attaches to the clicked row"
 if start_picker && by_name; then
     y="$(row_of gamma)"
-    click="\e[<0;20;${y}M\e[<0;20;${y}m"
+    click="\033[<0;20;${y}M\033[<0;20;${y}m"
     raw "$click$click"
     expect_action "double-click on gamma (row $y)" "attach:gamma"
 fi
 
 echo "Test: mouse wheel moves the selection"
 if start_picker && by_name; then
-    raw "\e[<65;20;10M"
+    raw "\033[<65;20;10M"
     keys Enter
     expect_action "wheel down + ⏎" "attach:beta"
 fi

@@ -13,6 +13,25 @@ PASS=0
 FAIL=0
 
 pass() { PASS=$((PASS+1)); echo "  PASS: $1"; }
+
+# with_timeout SECS CMD... — GNU timeout where available (Linux), Homebrew's
+# gtimeout, else a background kill (stock macOS has neither). Returns 124
+# when the command had to be killed, like timeout(1).
+with_timeout() {
+    local secs=$1
+    shift
+    if command -v timeout >/dev/null; then timeout "$secs" "$@"; return; fi
+    if command -v gtimeout >/dev/null; then gtimeout "$secs" "$@"; return; fi
+    "$@" &
+    local pid=$!
+    ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+    local killer=$!
+    wait "$pid"
+    local rc=$?
+    kill "$killer" 2>/dev/null
+    [[ $rc -eq 143 ]] && return 124
+    return $rc
+}
 fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1 — $2"; }
 
 cleanup() { $TMUX_BIN -L "$SOCKET" kill-server 2>/dev/null || true; }
@@ -57,7 +76,7 @@ echo "Test 3: Binary does not crash"
 cleanup
 $TMUX_BIN -L "$SOCKET" new-session -d -s e2e-test
 sleep 0.1
-timeout 2 "$BINARY" 2>/dev/null </dev/null && rc=$? || rc=$?
+with_timeout 2 "$BINARY" 2>/dev/null </dev/null && rc=$? || rc=$?
 if [[ $rc -le 1 || $rc -eq 124 ]]; then
     pass "binary runs without crash (exit $rc)"
 else
