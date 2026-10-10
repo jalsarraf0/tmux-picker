@@ -6,6 +6,12 @@ git tags.
 
 ## [Unreleased]
 
+### Dependencies
+
+- `toml` 0.9 → 1.1 and `signal-hook` 0.3 → 0.4 (no code changes needed);
+  every other dependency refreshed within its semver range (ratatui
+  0.30.2, clap 4.6.7).
+
 ### Classic or cyberpunk
 
 - **`[theme] style = "cyberpunk" | "classic"`.** Classic is a plain preset
