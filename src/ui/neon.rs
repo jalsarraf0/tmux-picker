@@ -296,6 +296,12 @@ impl Palette {
         }
     }
 
+    /// The background colours blend toward: the theme's, or a near-black
+    /// stand-in when the terminal's own shows through.
+    pub fn base(&self) -> Rgb {
+        self.bg.unwrap_or(FALLBACK_BG)
+    }
+
     /// The screen background colour (`Color::Reset` when transparent).
     pub fn bg_color(&self) -> Color {
         self.bg.map_or(Color::Reset, |bg| self.c(bg))
@@ -356,35 +362,64 @@ pub const INTRO: f32 = 0.7;
 const GLITCH_SLOT: f32 = 0.22;
 
 // ---------------------------------------------------------------------------
-// Banner font (3-row box-drawing glyphs)
+// Banner font (5-pixel bitmap glyphs, drawn two pixels per cell)
 // ---------------------------------------------------------------------------
 
-fn glyph(c: char) -> [&'static str; 3] {
+/// Pixel rows per glyph. With half blocks that is two and a half cells,
+/// leaving the last half row for the drop shadow.
+pub const FONT_H: usize = 5;
+
+fn glyph(c: char) -> [&'static str; FONT_H] {
     match c {
-        'T' => ["╔╦╗", " ║ ", " ╩ "],
-        'M' => ["╔╦╗", "║║║", "╩ ╩"],
-        'U' => ["╦ ╦", "║ ║", "╚═╝"],
-        'X' => ["═╗ ╦", "╔╩╦╝", "╩ ╚═"],
-        'P' => ["╔═╗", "╠═╝", "╩  "],
-        'I' => ["╦", "║", "╩"],
-        'C' => ["╔═╗", "║  ", "╚═╝"],
-        'K' => ["╦╔═", "╠╩╗", "╩ ╩"],
-        'E' => ["╔═╗", "║╣ ", "╚═╝"],
-        'R' => ["╦═╗", "╠╦╝", "╩╚═"],
-        '/' => ["  ╱", " ╱ ", "╱  "],
-        _ => [" ", " ", " "],
+        'T' => ["###", ".#.", ".#.", ".#.", ".#."],
+        'M' => ["#...#", "##.##", "#.#.#", "#...#", "#...#"],
+        'U' => ["#.#", "#.#", "#.#", "#.#", "###"],
+        'X' => ["#.#", "#.#", ".#.", "#.#", "#.#"],
+        'P' => ["##.", "#.#", "##.", "#..", "#.."],
+        'I' => ["###", ".#.", ".#.", ".#.", "###"],
+        'C' => [".##", "#..", "#..", "#..", ".##"],
+        'K' => ["#.#", "#.#", "##.", "#.#", "#.#"],
+        'E' => ["###", "#..", "##.", "#..", "###"],
+        'R' => ["##.", "#.#", "##.", "#.#", "#.#"],
+        '/' => ["..#", "..#", ".#.", "#..", "#.."],
+        _ => [".", ".", ".", ".", "."],
     }
 }
 
-/// The three banner rows for `text`, as char vectors for per-cell colouring.
-pub fn banner_rows(text: &str) -> [Vec<char>; 3] {
-    let mut rows: [Vec<char>; 3] = Default::default();
-    for c in text.chars() {
+/// The banner bitmap for `text`: `FONT_H` rows, true where a pixel is lit.
+/// Glyphs are one blank column apart.
+pub fn banner_bits(text: &str) -> [Vec<bool>; FONT_H] {
+    let mut rows: [Vec<bool>; FONT_H] = Default::default();
+    for (i, c) in text.chars().enumerate() {
         for (row, part) in rows.iter_mut().zip(glyph(c)) {
-            row.extend(part.chars());
+            if i > 0 {
+                row.push(false);
+            }
+            row.extend(part.chars().map(|p| p == '#'));
         }
     }
     rows
+}
+
+/// The half-block glyph for a cell whose top and bottom pixels are lit.
+pub fn half_block(top: bool, bottom: bool) -> char {
+    match (top, bottom) {
+        (true, true) => '█',
+        (true, false) => '▀',
+        (false, true) => '▄',
+        (false, false) => ' ',
+    }
+}
+
+/// The banner as plain half-block text rows (three cells tall).
+pub fn banner_rows(text: &str) -> [Vec<char>; 3] {
+    let bits = banner_bits(text);
+    let px = |y: usize, x: usize| bits.get(y).is_some_and(|r| r[x]);
+    std::array::from_fn(|row| {
+        (0..bits[0].len())
+            .map(|x| half_block(px(2 * row, x), px(2 * row + 1, x)))
+            .collect()
+    })
 }
 
 /// Characters used for glitch noise.
@@ -454,9 +489,10 @@ pub fn ellipsize(text: &str, max: u16) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// A heavy-line box whose border runs along a gradient, with a tabbed
-/// title (`┫ TITLE ┣`) and an optional right-hand tag. `hot` boxes glow
-/// violet→cyan with a pink title; cold ones fade to the background.
+/// A heavy-line box whose border runs along a gradient, with a title set
+/// into the top edge (`┏━━ TITLE ━━━`) and an optional right-hand tag.
+/// `hot` boxes glow violet→cyan with a pink title; cold ones fade to the
+/// background.
 pub struct NeonBox<'a> {
     pub title: &'a str,
     pub tag: Option<&'a str>,
@@ -516,20 +552,13 @@ impl NeonBox<'_> {
         cell(buf, x0, y1, bl, pal.fg(a));
         cell(buf, x1, y1, br, pal.fg(b));
 
-        let edge = if pal.classic {
-            a
-        } else if self.hot {
-            pal.cyan
-        } else {
-            pal.dim
-        };
-        let [open, close] = if pal.classic { [h; 2] } else { ['┫', '┣'] };
+        // The title and tag cut into the top edge; the line itself frames
+        // them.
         let room = area.width.saturating_sub(6);
         if !self.title.is_empty() && room > 2 {
             let title = ellipsize(self.title, room);
-            cell(buf, x0 + 2, y0, open, pal.fg(edge));
             let title_style = pal.bold(if self.hot { pal.pink } else { pal.dim });
-            let end = put(
+            put(
                 buf,
                 x0 + 3,
                 y0,
@@ -537,21 +566,35 @@ impl NeonBox<'_> {
                 room + 2,
                 title_style,
             );
-            cell(buf, end, y0, close, pal.fg(edge));
             if let (Some(tag), Some(tag_x)) = (self.tag, self.tag_x(area)) {
                 let tag_w = width(tag) + 2;
-                {
-                    cell(buf, tag_x, y0, open, pal.fg(edge));
-                    put(
-                        buf,
-                        tag_x + 1,
-                        y0,
-                        &format!(" {tag} "),
-                        tag_w,
-                        pal.fg(pal.dim),
-                    );
-                    cell(buf, tag_x + 1 + tag_w, y0, close, pal.fg(edge));
+                put(
+                    buf,
+                    tag_x + 1,
+                    y0,
+                    &format!(" {tag} "),
+                    tag_w,
+                    pal.fg(pal.dim),
+                );
+            }
+        }
+    }
+}
+
+/// Fade every cell in `area` toward the background by `amount` (0..=1),
+/// so a modal card stands out from the frame behind it.
+pub fn scrim(buf: &mut Buffer, pal: &Palette, area: Rect, amount: f32) {
+    let base = pal.base();
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                let fg = to_rgb(c.fg).unwrap_or(pal.text);
+                c.fg = pal.c(lerp(fg, base, amount));
+                if let Some(bg) = to_rgb(c.bg) {
+                    c.bg = pal.c(lerp(bg, base, amount));
                 }
+                c.modifier.remove(Modifier::BOLD);
             }
         }
     }
@@ -640,7 +683,7 @@ pub fn rain(buf: &mut Buffer, pal: &Palette, area: Rect, fx: Fx, seed: u64) {
                 let glyph =
                     b"0123456789ABCDEF"[(hash3(c, u64::from(row), tick as u64) % 16) as usize];
                 let base = if dist == 0 { pal.cyan } else { pal.purple };
-                let fade = pal.bg.unwrap_or(FALLBACK_BG);
+                let fade = pal.base();
                 let mut style = pal.fg(lerp(base, fade, dist as f32 / 6.0));
                 if dist == 0 {
                     style = style.add_modifier(Modifier::BOLD);

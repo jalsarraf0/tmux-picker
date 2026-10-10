@@ -6,6 +6,31 @@ git tags.
 
 ## [Unreleased]
 
+### Sharper neon HUD
+
+The cyberpunk look keeps its palette, effects and layout with less noise
+and clearer focus (design: `docs/superpowers/specs/2026-10-09-neon-hud-polish-design.md`).
+
+- **Pixel logo.** `TMUX//PICKER` in a solid 3×5 pixel font drawn two
+  pixels per cell: neon sweep across, chrome highlight on top, violet
+  drop shadow. It replaces the box-drawing outline, which broke apart in
+  most fonts. Scanlines skip it, and at 80 columns the info block drops
+  its labels before its values.
+- **`SIGNAL` column.** A braille signal meter that drains green → yellow
+  → violet → dim as a session idles, beside a compact age (`now`, `40s`,
+  `7m`, `2h`, `3d`). Window counts lose the `win` suffix, detached
+  sessions lose the hollow `◇`, and the beam alone marks the selection.
+- **Focus.** The list keeps the hot frame; the feed gets a cold one under
+  a live title. Panel titles cut cleanly into the border (no `┫ ┣`).
+- **No repeats.** The status rule shows the mode, sort, filter and
+  flashes; counts only when the banner is hidden. The footer `T+` clock
+  is gone (the banner has it).
+- **Feed.** Shell prompts light up (violet host, pink sigil, bright
+  command); purpose is bold yellow beside the cyan project.
+- **Keycaps** in the footer, and `·` instead of `░` between items.
+- **Modals** dim the frame behind them and get a gradient frame with the
+  title in the top edge.
+
 ### Dependencies
 
 - `toml` 0.9 → 1.1 and `signal-hook` 0.3 → 0.4 (no code changes needed);

@@ -18,11 +18,11 @@ use crate::config::Theme;
 use crate::session::Session;
 use neon::{
     Fx, NOISE, NeonBox, Palette, Rgb, bar, cell, ellipsize, fill_bg, gradient, hash3, lerp, put,
-    rain, scanlines, width,
+    rain, scanlines, scrim, width,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const BANNER_TEXT: &str = "TMUX // PICKER";
+const BANNER_TEXT: &str = "TMUX//PICKER";
 /// Frame pacing while effects run.
 const FRAME: Duration = Duration::from_millis(100);
 /// Tick without effects: only the countdown and clock move.
@@ -60,6 +60,8 @@ struct Words {
     link_head: &'static str,
     linked: (&'static str, &'static str),
     unlinked: &'static str,
+    /// Activity column header.
+    act_head: &'static str,
 }
 
 const CYBER: Words = Words {
@@ -69,8 +71,8 @@ const CYBER: Words = Words {
     sessions: "SESSIONS",
     preview: "FEED",
     windows: "WINDOWS",
-    preview_tag: "● LIVE ░ ⇥ WINDOWS",
-    windows_tag: "● LIVE ░ ⇥ FEED",
+    preview_tag: "● LIVE · ⇥ WINDOWS",
+    windows_tag: "● LIVE · ⇥ FEED",
     blank: "░ BLANK PANE ░",
     no_signal: " ◢◤ NO SIGNAL ◢◤ ",
     manual: "MANUAL",
@@ -80,15 +82,16 @@ const CYBER: Words = Words {
     rename: "RENAME",
     kill: "TERMINATE",
     matches: "MATCH",
-    kill_hint: " ? ░ y ▸ confirm ░ any other key ▸ abort",
-    auto_off: "auto-attach off ░ ⏎ to jack in",
+    kill_hint: " ? · y ▸ confirm · any other key ▸ abort",
+    auto_off: "auto-attach off · ⏎ to jack in",
     help_title: "COMMAND REFERENCE",
     help_close: "ESC / ? / Q ▸ CLOSE",
     kill_title: "TERMINATE SESSION",
-    kill_confirm: "Y ▸ CONFIRM ░ ANY OTHER KEY ▸ ABORT",
+    kill_confirm: "Y ▸ CONFIRM · ANY OTHER KEY ▸ ABORT",
     link_head: "LINK",
     linked: ("◆", " LINKED"),
-    unlinked: "◇",
+    unlinked: " ",
+    act_head: "SIGNAL",
 };
 
 const CLASSIC: Words = Words {
@@ -118,6 +121,7 @@ const CLASSIC: Words = Words {
     link_head: "ATTACHED",
     linked: ("●", " yes"),
     unlinked: "○",
+    act_head: "ACTIVITY",
 };
 
 /// Renderer state that outlives a frame: the resolved palette, the
@@ -126,7 +130,7 @@ pub struct Ui {
     pal: Palette,
     started: Instant,
     who: String,
-    banner: [Vec<char>; 3],
+    banner: [Vec<bool>; neon::FONT_H],
     /// Wall clock shown in the banner (swappable so tests are stable).
     clock: fn() -> String,
 }
@@ -143,7 +147,7 @@ impl Ui {
             pal,
             started: Instant::now(),
             who: whoami(),
-            banner: neon::banner_rows(BANNER_TEXT),
+            banner: neon::banner_bits(BANNER_TEXT),
             clock: wall_clock,
         }
     }
@@ -191,14 +195,24 @@ impl Ui {
             self.draw_gauge(buf, r, app, fx);
         }
         if let Some(r) = a.footer {
-            self.draw_footer(buf, r, app, t);
+            self.draw_footer(buf, r, app);
         }
         match app.mode {
             Mode::Help => self.draw_help(buf, area, fx),
             Mode::ConfirmKill => self.draw_kill(buf, area, app, fx),
             _ => {}
         }
-        scanlines(buf, pal, area);
+        // The logo's half-lit cells would show the shading as a lighter
+        // half pixel, so the scanlines start below it.
+        let shaded = a.banner.map_or(area, |b| {
+            Rect::new(
+                area.x,
+                b.bottom(),
+                area.width,
+                area.bottom().saturating_sub(b.bottom()),
+            )
+        });
+        scanlines(buf, pal, shaded);
     }
 
     /// The visible-list index under a mouse position, if it is on a row.
@@ -217,6 +231,8 @@ impl Ui {
     // Banner + status
     // -----------------------------------------------------------------------
 
+    /// The logo: pixel letters two to a cell, lit along the neon sweep
+    /// with a chrome highlight on top, over a violet extruded shadow.
     fn draw_banner(&self, buf: &mut Buffer, r: Rect, app: &App, fx: Fx) {
         let pal = &self.pal;
         let t = fx.time();
@@ -226,33 +242,71 @@ impl Ui {
         let phase = (t * 2.0).floor() / 2.0 * 0.04;
         let slot = (t * 20.0) as u64;
         let stops = pal.neon();
-        for (row, chars) in (0u16..).zip(&self.banner) {
-            let len = chars.len().max(1) as f32;
+        let bits = &self.banner;
+        let len = bits[0].len();
+        let lit = |x: usize, y: usize| y < neon::FONT_H && x < len && bits[y][x];
+        let shadow = lerp(pal.base(), pal.purple, 0.24);
+        // Chrome: the top pixel rows run hot toward white.
+        const SHINE: [f32; neon::FONT_H] = [0.42, 0.22, 0.06, 0.0, 0.0];
+        let pixel = |x: usize, y: usize| -> Option<Rgb> {
+            if lit(x, y) {
+                let pos = x as f32 / len.max(1) as f32;
+                let col = gradient(&stops, (pos + phase).fract());
+                Some(lerp(col, pal.white, SHINE[y]))
+            } else if x > 0 && y > 0 && lit(x - 1, y - 1) {
+                Some(shadow)
+            } else {
+                None
+            }
+        };
+        for row in 0..3u16 {
             let shift: i32 = if glitching {
                 (hash3(slot, u64::from(row), 7) % 3) as i32 - 1
             } else {
                 0
             };
-            for (i, &glyph) in chars.iter().enumerate() {
-                let pos = i as f32 / len;
-                let mut col = gradient(&stops, (pos + phase).fract());
-                let mut ch = glyph;
-                if ch != ' ' {
-                    let h = hash3(slot, u64::from(row), i as u64);
-                    if pos >= decrypt {
-                        ch = NOISE[(h % NOISE.len() as u64) as usize];
-                        col = [pal.purple, pal.cyan, pal.faint][(h >> 8) as usize % 3];
-                    } else if glitching && h % 100 < 8 {
-                        ch = NOISE[(h % NOISE.len() as u64) as usize];
-                        col = [pal.red, pal.cyan, pal.white][(h >> 8) as usize % 3];
-                    }
+            let (y_top, y_bot) = (2 * usize::from(row), 2 * usize::from(row) + 1);
+            for i in 0..=len {
+                let (top, bot) = (pixel(i, y_top), pixel(i, y_bot));
+                if top.is_none() && bot.is_none() {
+                    continue;
                 }
                 let x = i32::from(r.x) + 2 + i as i32 + shift;
-                if let Ok(x) = u16::try_from(x)
-                    && x < r.right()
-                {
-                    cell(buf, x, r.y + row, ch, pal.bold(col));
+                let Some(c) = u16::try_from(x)
+                    .ok()
+                    .filter(|&x| x < r.right())
+                    .and_then(|x| buf.cell_mut((x, r.y + row)))
+                else {
+                    continue;
+                };
+                let pos = i as f32 / len.max(1) as f32;
+                let h = hash3(slot, u64::from(row), i as u64);
+                let noise = if decrypt < 1.0 && pos >= decrypt {
+                    Some([pal.purple, pal.cyan, pal.faint][(h >> 8) as usize % 3])
+                } else if glitching && h % 100 < 8 {
+                    Some([pal.red, pal.cyan, pal.white][(h >> 8) as usize % 3])
+                } else {
+                    None
+                };
+                let mut sym = [0u8; 4];
+                if let Some(col) = noise {
+                    let ch = NOISE[(h % NOISE.len() as u64) as usize];
+                    c.set_symbol(ch.encode_utf8(&mut sym))
+                        .set_style(pal.bold(col));
+                    continue;
                 }
+                // Both halves lit: the top colour on the glyph, the bottom
+                // one behind it, so each pixel keeps its own shade.
+                let (ch, fg) = match (top, bot) {
+                    (Some(t), Some(b)) => {
+                        c.set_bg(pal.c(b));
+                        ('▀', t)
+                    }
+                    (Some(t), None) => ('▀', t),
+                    (None, Some(b)) => ('▄', b),
+                    (None, None) => continue,
+                };
+                c.set_symbol(ch.encode_utf8(&mut sym)).set_fg(pal.c(fg));
             }
         }
 
@@ -261,20 +315,22 @@ impl Ui {
             (String::from("NETRUNNER ▸ "), self.who.clone()),
             (
                 String::from("GRID ▸ "),
-                format!("{} sessions ░ {linked} linked", app.sessions.len()),
+                format!("{} sessions · {linked} linked", app.sessions.len()),
             ),
-            (format!("{} ░ T+", (self.clock)()), mmss(fx.t)),
+            (format!("{} · T+", (self.clock)()), mmss(fx.t)),
         ];
-        let banner_end = r.x + 4 + self.banner[0].len() as u16;
+        let banner_end = r.x + 4 + len as u16;
+        let fits = |w: u16| r.right().checked_sub(w + 2).filter(|&x| x > banner_end);
         for (row, (label, value)) in (0u16..).zip(&info) {
-            let w = width(label) + width(value);
-            let Some(x) = r.right().checked_sub(w + 2) else {
-                continue;
+            // Drop the label before the value when space runs short.
+            let full = width(label) + width(value);
+            let (label, x) = match (fits(full), fits(width(value))) {
+                (Some(x), _) => (label.as_str(), x),
+                (None, Some(x)) => ("", x),
+                (None, None) => continue,
             };
-            if x > banner_end {
-                let x = put(buf, x, r.y + row, label, w, pal.fg(pal.dim));
-                put(buf, x, r.y + row, value, w, pal.bold(pal.cyan));
-            }
+            let x = put(buf, x, r.y + row, label, full, pal.fg(pal.dim));
+            put(buf, x, r.y + row, value, full, pal.bold(pal.cyan));
         }
     }
 
@@ -290,24 +346,44 @@ impl Ui {
             let d = (f32::from(i) - pulse).abs() / 10.0;
             cell(buf, r.x + i, r.y, '─', pal.fg(lerp(pal.cyan, pal.faint, d)));
         }
-        let (text, color) = status_text(app, pal);
-        let mut x = if pal.classic {
-            put(buf, r.x + 1, r.y, " tmux-picker ·", w, pal.bold(pal.pink))
-        } else {
-            put(buf, r.x + 2, r.y, "◢◤", w, pal.bold(pal.pink))
-        };
-        if compact && !pal.classic {
-            x = put(buf, x, r.y, " TMUX//PICKER ░", w, pal.bold(pal.pink));
+        if pal.classic {
+            let (text, color) = classic_status_text(app, pal);
+            let x = put(buf, r.x + 1, r.y, " tmux-picker ·", w, pal.bold(pal.pink));
+            let room = r.right().saturating_sub(x + 2);
+            put(
+                buf,
+                x,
+                r.y,
+                &format!(" {} ", ellipsize(&text, room.saturating_sub(2))),
+                room,
+                pal.bold(color),
+            );
+            return;
         }
-        let room = r.right().saturating_sub(x + 2);
-        put(
-            buf,
-            x,
-            r.y,
-            &format!(" {} ", ellipsize(&text, room.saturating_sub(2))),
-            room,
-            pal.bold(color),
-        );
+        // Segments sit on the rule with a short run of line between them.
+        let mut x = put(buf, r.x + 2, r.y, "◢◤", w, pal.bold(pal.pink));
+        if compact {
+            x = put(buf, x, r.y, " TMUX//PICKER ", w, pal.bold(pal.pink)) + 2;
+        }
+        for (i, (text, color)) in status_parts(app, pal, compact).iter().enumerate() {
+            let room = r.right().saturating_sub(x + 2);
+            if room < 4 {
+                break;
+            }
+            let style = if i == 0 {
+                pal.bold(*color)
+            } else {
+                pal.fg(*color)
+            };
+            x = put(
+                buf,
+                x,
+                r.y,
+                &format!(" {} ", ellipsize(text, room.saturating_sub(2))),
+                room,
+                style,
+            ) + 2;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -471,11 +547,13 @@ impl Ui {
                 words.windows_tag,
             ),
         };
+        // The list holds focus; the feed keeps a cold frame under a live
+        // title so it reads as secondary.
         let pane_box = NeonBox {
             title: &title,
             tag: Some(tag),
             hot: matches!(app.mode, Mode::Pick | Mode::Filter),
-            stops: None,
+            stops: (!pal.classic).then_some((pal.faint, pal.purple)),
         };
         pane_box.render(buf, pal, r);
         if let Some(x) = pane_box.tag_x(r).filter(|_| !pal.classic) {
@@ -493,17 +571,24 @@ impl Ui {
         }
         let mut y = inner.y;
         let mut rows = inner.height;
-        if let Some(detail) = app.selected_session().and_then(format_detail_line) {
-            let x = put(buf, inner.x, y, "↳ ", inner.width, pal.bold(pal.pink));
-            let rest = detail.trim_start_matches("\u{21B3} ");
-            put(
-                buf,
-                x,
-                y,
-                rest,
-                inner.right().saturating_sub(x),
-                pal.fg(pal.cyan),
-            );
+        // "↳ ~/git/app  ·  PR #234" for sessions with a project or purpose.
+        if let Some(m) = app
+            .selected_session()
+            .and_then(|s| s.metadata.as_ref())
+            .filter(|m| m.project.is_some() || m.purpose.is_some())
+        {
+            let end = inner.right();
+            let mut x = put(buf, inner.x, y, "↳ ", inner.width, pal.bold(pal.pink));
+            if let Some(ref p) = m.project {
+                let p = collapse_home(p);
+                x = put(buf, x, y, &p, end.saturating_sub(x), pal.fg(pal.cyan));
+            }
+            if let Some(ref pu) = m.purpose {
+                if m.project.is_some() {
+                    x = put(buf, x, y, "  ·  ", end.saturating_sub(x), pal.fg(pal.faint));
+                }
+                put(buf, x, y, pu, end.saturating_sub(x), pal.bold(pal.yellow));
+            }
             y += 1;
             rows -= 1;
         }
@@ -517,7 +602,34 @@ impl Ui {
                     for (i, line) in (0u16..).zip(shown) {
                         let age = (shown.len() as u16 - 1 - i) as f32 / span;
                         let col = lerp(pal.text, pal.faint, age * 0.9);
-                        put(buf, body.x, body.y + i, line, body.width, pal.fg(col));
+                        let yy = body.y + i;
+                        let prompt = (!pal.classic).then(|| split_prompt(line)).flatten();
+                        let Some((head, sigil, cmd)) = prompt else {
+                            put(buf, body.x, yy, line, body.width, pal.fg(col));
+                            continue;
+                        };
+                        // Shell prompts: host in violet, the sigil lit,
+                        // the command bright, all fading with age.
+                        let end = body.right();
+                        let fade = |c: Rgb| lerp(c, pal.faint, age * 0.7);
+                        let mut x =
+                            put(buf, body.x, yy, head, body.width, pal.fg(fade(pal.purple)));
+                        x = put(
+                            buf,
+                            x,
+                            yy,
+                            sigil,
+                            end.saturating_sub(x),
+                            pal.bold(fade(pal.pink)),
+                        );
+                        put(
+                            buf,
+                            x,
+                            yy,
+                            cmd,
+                            end.saturating_sub(x),
+                            pal.fg(fade(pal.white)),
+                        );
                     }
                 }
                 Some(_) => centered(buf, body, body.y + rows / 2, words.blank, pal.fg(pal.dim)),
@@ -762,15 +874,13 @@ impl Ui {
     // Footer
     // -----------------------------------------------------------------------
 
-    fn draw_footer(&self, buf: &mut Buffer, r: Rect, app: &App, t: f32) {
+    fn draw_footer(&self, buf: &mut Buffer, r: Rect, app: &App) {
         let pal = &self.pal;
-        let mut x = if pal.classic {
-            r.x + 1
-        } else {
-            fill_bg(buf, r, pal.c(pal.faint));
-            let clock = format!("◢ T+{} ◣", mmss(t));
-            put(buf, r.x + 1, r.y, &clock, r.width, pal.bold(pal.pink)) + 1
-        };
+        if !pal.classic {
+            self.draw_chips(buf, r, app);
+            return;
+        }
+        let mut x = r.x + 1;
         let right = format!("tmux-picker v{VERSION} ");
         let right_w = width(&right);
         let limit = r.right().saturating_sub(right_w + 1);
@@ -797,12 +907,43 @@ impl Ui {
         }
     }
 
+    /// Neon footer: each key on a violet keycap, its action in dim text.
+    fn draw_chips(&self, buf: &mut Buffer, r: Rect, app: &App) {
+        let pal = &self.pal;
+        let cap = pal
+            .bold(pal.white)
+            .bg(pal.c(lerp(pal.base(), pal.purple, 0.4)));
+        let right = format!("tmux-picker v{VERSION} ");
+        let right_w = width(&right);
+        let limit = r.right().saturating_sub(right_w + 1);
+        let mut x = r.x + 1;
+        for (i, (key, label)) in hints(app, false).iter().enumerate() {
+            let gap = if i > 0 { 2 } else { 0 };
+            let need = gap + width(key) + 3 + width(label);
+            if x + need > limit {
+                break;
+            }
+            x = put(buf, x + gap, r.y, &format!(" {key} "), need, cap);
+            x = put(buf, x + 1, r.y, label, need, pal.fg(pal.dim));
+        }
+        if r.right() > x + right_w + 1 {
+            put(
+                buf,
+                r.right() - right_w,
+                r.y,
+                &right,
+                right_w,
+                pal.fg(pal.faint),
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Overlays
     // -----------------------------------------------------------------------
 
-    /// A modal card: gradient `▀`/`▄` edges, flickering title. Returns the
-    /// card's rectangle.
+    /// A modal card over a dimmed frame: a gradient frame with the title
+    /// flickering in its top edge. Returns the card's rectangle.
     fn card(
         &self,
         buf: &mut Buffer,
@@ -813,6 +954,9 @@ impl Ui {
         fx: Fx,
     ) -> Rect {
         let pal = &self.pal;
+        if !pal.classic {
+            scrim(buf, pal, area, 0.7);
+        }
         let w = size.0.min(area.width.saturating_sub(2));
         let h = size.1.min(area.height);
         let card = Rect::new(
@@ -838,12 +982,13 @@ impl Ui {
             .render(buf, pal, card);
             return card;
         }
-        let span = f32::from(w - 1);
-        for i in 0..w {
-            let col = pal.fg(gradient(&[edge, pal.purple, edge], f32::from(i) / span));
-            cell(buf, card.x + i, card.y, '▀', col);
-            cell(buf, card.x + i, card.bottom() - 1, '▄', col);
+        NeonBox {
+            title: "",
+            tag: None,
+            hot: true,
+            stops: Some((edge, pal.cyan)),
         }
+        .render(buf, pal, card);
         let flicker = if fx.on && ((fx.t * 6.0) as u64).is_multiple_of(13) {
             pal.white
         } else {
@@ -852,8 +997,8 @@ impl Ui {
         centered(
             buf,
             card,
-            card.y + 1,
-            &format!("◢◤ {title} ◢◤"),
+            card.y,
+            &format!(" ◢◤ {title} ◢◤ "),
             pal.bold(flicker),
         );
         card
@@ -871,10 +1016,10 @@ impl Ui {
         } else {
             col_h(&sections)
         };
-        let size = (if two_col { 78 } else { 40 }, body_h as u16 + 5);
+        let size = (if two_col { 78 } else { 40 }, body_h as u16 + 4);
         let card = self.card(buf, area, size, pal.pink, self.words().help_title, fx);
         let draw_col = |buf: &mut Buffer, secs: &[HelpSection], x: u16, w: u16| {
-            let mut y = card.y + 3;
+            let mut y = card.y + 2;
             for (title, rows) in secs {
                 if y + 1 >= card.bottom() {
                     break;
@@ -920,23 +1065,23 @@ impl Ui {
 
     fn draw_kill(&self, buf: &mut Buffer, area: Rect, app: &App, fx: Fx) {
         let pal = &self.pal;
-        let card = self.card(buf, area, (58, 9), pal.red, self.words().kill_title, fx);
+        let card = self.card(buf, area, (58, 7), pal.red, self.words().kill_title, fx);
         let target = app.kill_target.as_deref().unwrap_or("?");
         centered(
             buf,
             card,
-            card.y + 3,
+            card.y + 2,
             &ellipsize(target, card.width.saturating_sub(4)),
             pal.bold(pal.white),
         );
         centered(
             buf,
             card,
-            card.y + 4,
+            card.y + 3,
             "every pane and process in it ends",
             pal.fg(pal.dim),
         );
-        if card.height >= 8 && fx.blink(1.2) {
+        if card.height >= 7 && fx.blink(1.2) {
             centered(
                 buf,
                 card,
@@ -1098,7 +1243,8 @@ impl Columns {
 
     fn header(&self, buf: &mut Buffer, pal: &Palette, y: u16, words: &Words) {
         let style = pal.bold(pal.dim);
-        put(buf, self.x + 2, y, "##", 2, style);
+        let hash = if pal.classic { "##" } else { " #" };
+        put(buf, self.x + 2, y, hash, 2, style);
         put(
             buf,
             self.x + 8,
@@ -1117,7 +1263,7 @@ impl Columns {
             put(buf, self.link_x(), y, words.link_head, 8, style);
         }
         if self.act {
-            put(buf, self.act_x(), y, "ACTIVITY", COL_ACT, style);
+            put(buf, self.act_x(), y, words.act_head, COL_ACT, style);
         }
     }
 
@@ -1135,10 +1281,10 @@ impl Columns {
         let lifted = if pal.classic { pal.white } else { pal.text };
         let muted = |c: Rgb| if selected { lifted } else { c };
         // Selector + 1-indexed number within the visible list, so digit
-        // selection lines up with what the user sees.
-        if selected {
-            let arrow = if pal.classic { pal.cyan } else { pal.white };
-            put(buf, self.x, y, "▶", 1, pal.bold(arrow));
+        // selection lines up with what the user sees. The neon beam marks
+        // the row by itself.
+        if selected && pal.classic {
+            put(buf, self.x, y, "▶", 1, pal.bold(pal.cyan));
         }
         let num_style = if selected {
             pal.bold(pal.white)
@@ -1183,7 +1329,11 @@ impl Columns {
         }
 
         if self.win {
-            let win = s.windows_display();
+            let win = if pal.classic {
+                s.windows_display()
+            } else {
+                s.window_count.to_string()
+            };
             let w = width(&win).min(COL_WIN);
             put(
                 buf,
@@ -1219,7 +1369,9 @@ impl Columns {
         if self.link_text {
             put(buf, lx, y, text, 7, pal.bold(link_col));
         }
-        if self.act {
+        if self.act && !pal.classic {
+            signal(buf, pal, (self.act_x(), y), s, selected);
+        } else if self.act {
             let secs = s.last_activity.as_secs();
             let dot = if stale {
                 None
@@ -1253,49 +1405,110 @@ impl Columns {
     }
 }
 
+/// Recency as a phone-style signal meter and a compact age ("now",
+/// "40s", "7m", "2h", "3d"). Four braille bars, two to a cell, fill and
+/// glow green while the session is busy and drain through yellow and
+/// violet as it idles.
+fn signal(buf: &mut Buffer, pal: &Palette, (x, y): (u16, u16), s: &Session, selected: bool) {
+    // Bars of height 1-4 dots: odd bars in a cell's left dot column,
+    // even ones in its right.
+    const METER: [[char; 2]; 5] = [['⡀', ' '], ['⡀', ' '], ['⣠', ' '], ['⣠', '⡆'], ['⣠', '⣾']];
+    let secs = s.last_activity.as_secs();
+    let (lit, on) = match secs {
+        0..60 => (4, pal.green),
+        60..300 => (3, pal.yellow),
+        300..3600 => (2, pal.purple),
+        3600..86400 => (1, pal.dim),
+        _ => (0, pal.faint),
+    };
+    let bar_col = if selected && lit < 2 { pal.text } else { on };
+    for (i, ch) in (0u16..).zip(METER[lit]) {
+        cell(buf, x + i, y, ch, pal.bold(bar_col));
+    }
+    let age = match secs {
+        0..5 => String::from("now"),
+        5..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        3600..86400 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86400),
+    };
+    let text_col = if selected {
+        pal.white
+    } else if s.is_stale() {
+        pal.faint
+    } else if secs < 300 {
+        pal.text
+    } else {
+        pal.dim
+    };
+    put(
+        buf,
+        x + 3,
+        y,
+        &format!("{age:>3}"),
+        COL_ACT - 3,
+        pal.fg(text_col),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Text helpers
 // ---------------------------------------------------------------------------
 
-fn status_text(app: &App, pal: &Palette) -> (String, Rgb) {
+/// Status rule segments for the neon look: the mode first, then what
+/// shapes the list (sort, filter). Counts only appear when the banner,
+/// which already shows them, is gone.
+fn status_parts(app: &App, pal: &Palette, compact: bool) -> Vec<(String, Rgb)> {
     if let Some(ref flash) = app.flash {
-        return (flash.clone(), pal.cyan);
+        return vec![(format!("◆ {flash}"), pal.cyan)];
     }
     let n = app.sessions.len();
-    if pal.classic {
-        return classic_status_text(app, pal);
-    }
     match app.mode {
         Mode::Pick => {
-            let linked = app.sessions.iter().filter(|s| s.attached).count();
-            let mut text = format!("SELECT TARGET ░ {n} SESSIONS ░ {linked} LINKED");
+            let mut parts = vec![(String::from("SELECT TARGET"), pal.yellow)];
+            if compact {
+                let linked = app.sessions.iter().filter(|s| s.attached).count();
+                parts.push((format!("{n} SESSIONS · {linked} LINKED"), pal.dim));
+            }
             if app.sort_mode != SortMode::Default {
-                text.push_str(&format!(" ░ SORT ▸ {}", app.sort_mode.label()));
+                parts.push((format!("SORT ▸ {}", app.sort_mode.label()), pal.cyan));
             }
             if !app.filter.is_empty() {
-                text.push_str(&format!(" ░ FILTER ▸ /{}", app.filter));
+                parts.push((format!("FILTER ▸ /{}", app.filter), pal.cyan));
             }
-            (text, pal.yellow)
+            parts
         }
-        Mode::Filter => (
-            format!("FILTERING ░ {}/{n} MATCH", app.filtered_indices.len()),
-            pal.yellow,
-        ),
-        Mode::NewInput => (String::from("NEW SESSION ░ NAME THE TARGET"), pal.yellow),
-        Mode::Rename => (
-            format!("RENAME ░ {}", app.rename_target.as_deref().unwrap_or("")),
-            pal.yellow,
-        ),
-        Mode::ConfirmKill => (
-            format!("TERMINATE ░ {}", app.kill_target.as_deref().unwrap_or("?")),
-            pal.red,
-        ),
-        Mode::Help => (String::from("COMMAND REFERENCE"), pal.yellow),
+        Mode::Filter => vec![
+            (String::from("FILTERING"), pal.yellow),
+            (
+                format!("{}/{n} MATCH", app.filtered_indices.len()),
+                pal.cyan,
+            ),
+        ],
+        Mode::NewInput => vec![
+            (String::from("NEW SESSION"), pal.yellow),
+            (String::from("NAME THE TARGET"), pal.dim),
+        ],
+        Mode::Rename => vec![
+            (String::from("RENAME"), pal.yellow),
+            (app.rename_target.clone().unwrap_or_default(), pal.cyan),
+        ],
+        Mode::ConfirmKill => vec![
+            (String::from("TERMINATE"), pal.red),
+            (
+                app.kill_target.clone().unwrap_or_else(|| String::from("?")),
+                pal.white,
+            ),
+        ],
+        Mode::Help => vec![(String::from("COMMAND REFERENCE"), pal.yellow)],
     }
 }
 
 /// Status line for the classic look: plain words, `·` separators.
 fn classic_status_text(app: &App, pal: &Palette) -> (String, Rgb) {
+    if let Some(ref flash) = app.flash {
+        return (flash.clone(), pal.cyan);
+    }
     let n = app.sessions.len();
     match app.mode {
         Mode::Pick => {
@@ -1423,23 +1636,6 @@ pub fn help_overlay_lines() -> Vec<String> {
     out
 }
 
-/// "↳ ~/git/app  ·  PR #234" for sessions with a project or purpose.
-fn format_detail_line(session: &Session) -> Option<String> {
-    let m = session.metadata.as_ref()?;
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(ref p) = m.project {
-        parts.push(collapse_home(p));
-    }
-    if let Some(ref pu) = m.purpose {
-        parts.push(pu.clone());
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(format!("\u{21B3} {}", parts.join("  \u{00B7}  ")))
-    }
-}
-
 fn collapse_home(path: &str) -> String {
     if let Ok(home) = std::env::var("HOME")
         && let Some(rest) = path.strip_prefix(&home)
@@ -1447,6 +1643,34 @@ fn collapse_home(path: &str) -> String {
         return format!("~{rest}");
     }
     path.to_string()
+}
+
+/// Split a captured line at a shell prompt into (prompt, sigil, command):
+/// `user@host:~$ make` gives ("user@host:~", "$", " make"). The prompt
+/// before the sigil must be one short word, so `$` and `#` inside
+/// ordinary output don't count; `#` needs a word before it (root
+/// prompts) so comment lines don't either.
+fn split_prompt(line: &str) -> Option<(&str, &str, &str)> {
+    const SIGILS: [char; 6] = ['$', '#', '%', '❯', '➜', 'λ'];
+    let lead = line.len() - line.trim_start().len();
+    let (i, sigil) = line[lead..]
+        .char_indices()
+        .take(48)
+        .find(|&(_, c)| SIGILS.contains(&c))?;
+    let at = lead + i;
+    let head = &line[lead..at];
+    let numeric = !head.is_empty() && head.chars().all(|c| c.is_ascii_digit() || c == '.');
+    if head.contains(char::is_whitespace)
+        || (sigil == '#' && head.is_empty())
+        || (sigil == '%' && numeric)
+    {
+        return None;
+    }
+    let rest = &line[at + sigil.len_utf8()..];
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    Some((&line[..at], &line[at..at + sigil.len_utf8()], rest))
 }
 
 /// The longest suffix of `text` that fits in `max` columns.
@@ -1570,38 +1794,65 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn detail_line_with_project_only() {
+    fn detail_text(metadata: Metadata) -> String {
         let s = Session {
-            metadata: Some(Metadata {
-                project: Some("/home/u/git/app".into()),
-                ..Default::default()
-            }),
+            metadata: Some(metadata),
             ..make_session("main", None)
         };
+        let app = App::new(vec![s], &Config::default());
+        let text = dump(&render(&ui(), &app, 100, 30, 5.0));
+        text.lines()
+            .find(|l| l.contains('↳'))
+            .map(|l| {
+                l.split('↳')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_end_matches(['┃', ' '])
+                    .to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn detail_line_with_project_only() {
         // SAFETY: tests may run in parallel. Best-effort assertion that prefix
         // logic works at all.
         unsafe {
             std::env::set_var("HOME", "/home/u");
         }
-        assert_eq!(format_detail_line(&s).unwrap(), "\u{21B3} ~/git/app");
+        let text = detail_text(Metadata {
+            project: Some("/home/u/git/app".into()),
+            ..Default::default()
+        });
+        assert_eq!(text, " ~/git/app");
     }
 
     #[test]
     fn detail_line_with_purpose_only() {
-        let s = Session {
-            metadata: Some(Metadata {
-                purpose: Some("PR #234".into()),
-                ..Default::default()
-            }),
-            ..make_session("main", None)
-        };
-        assert_eq!(format_detail_line(&s).unwrap(), "\u{21B3} PR #234");
+        let text = detail_text(Metadata {
+            purpose: Some("PR #234".into()),
+            ..Default::default()
+        });
+        assert_eq!(text, " PR #234");
     }
 
     #[test]
-    fn detail_line_none_for_no_metadata() {
-        assert!(format_detail_line(&make_session("main", None)).is_none());
+    fn detail_line_joins_project_and_purpose() {
+        let text = detail_text(Metadata {
+            project: Some("/srv/app".into()),
+            purpose: Some("PR #234".into()),
+            ..Default::default()
+        });
+        assert_eq!(text, " /srv/app  ·  PR #234");
+    }
+
+    #[test]
+    fn detail_line_none_without_project_or_purpose() {
+        let text = detail_text(Metadata {
+            label: Some("just a label".into()),
+            ..Default::default()
+        });
+        assert_eq!(text, "");
     }
 
     #[test]
@@ -1693,8 +1944,156 @@ mod tests {
         assert!(text.contains("AUTO-ATTACH"), "{text}");
         assert!(text.contains("SESSIONS"), "{text}");
         assert!(text.contains("NETRUNNER"), "{text}");
-        assert!(text.contains("╔╦╗"), "banner glyphs missing: {text}");
+        let logo: String = text.lines().next().unwrap_or("").chars().take(52).collect();
+        assert!(
+            logo.matches('▀').count() > 10,
+            "banner glyphs missing: {text}"
+        );
         assert!(text.contains(&format!("v{VERSION}")), "{text}");
+    }
+
+    fn still() -> Ui {
+        let theme = Theme {
+            animations: false,
+            ..Theme::default()
+        };
+        frozen(&theme, true)
+    }
+
+    /// Each logo cell carries two pixels: the top one in the glyph colour
+    /// and, when lit, the bottom one as the cell background.
+    #[test]
+    fn logo_cells_shade_each_pixel() {
+        let app = App::new(sessions(3), &Config::default());
+        let buf = render(&still(), &app, 120, 32, 5.0);
+        // The T's stem (column 1 of the glyph, drawn from x = 2).
+        let stem = &buf[(3, 1)];
+        assert_eq!(stem.symbol(), "▀");
+        assert!(matches!(stem.bg, Color::Rgb(..)), "bottom pixel unlit");
+        // The chrome highlight: the top pixel row is brighter than the
+        // one below it.
+        let lum = |c: Color| match c {
+            Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            other => panic!("expected rgb, got {other:?}"),
+        };
+        let top = &buf[(3, 0)];
+        assert!(lum(top.fg) > lum(top.bg), "no highlight on the top row");
+    }
+
+    #[test]
+    fn scanlines_skip_the_logo() {
+        let app = App::new(sessions(3), &Config::default());
+        let buf = render(&still(), &app, 120, 32, 5.0);
+        let base = Color::Rgb(8, 5, 18);
+        // Row 1 is odd: shaded everywhere except the logo band.
+        assert_eq!(buf[(60, 1)].bg, base, "logo band shaded");
+        let below = (4..32).find(|&y| y % 2 == 1 && buf[(60, y)].symbol() == " ");
+        let y = below.expect("a plain odd row below the logo");
+        assert_ne!(buf[(60, y)].bg, base, "scanlines missing below the logo");
+    }
+
+    #[test]
+    fn signal_meter_drains_with_idle_time() {
+        let mut list = sessions(3);
+        list[1].last_activity = Duration::from_secs(420);
+        list[2].last_activity = Duration::from_secs(3 * 86_400);
+        let app = App::new(list, &Config::default());
+        let text = dump(&render(&still(), &app, 120, 32, 5.0));
+        let row = |name: &str| {
+            text.lines()
+                .find(|l| l.contains(name))
+                .unwrap_or_else(|| panic!("{name} missing: {text}"))
+                .to_string()
+        };
+        assert!(text.contains("SIGNAL"), "{text}");
+        assert!(row("sess-00").contains("⣠⣾ now"), "{}", row("sess-00"));
+        assert!(row("sess-01").contains("⣠   7m"), "{}", row("sess-01"));
+        assert!(row("sess-02").contains("⡀   3d"), "{}", row("sess-02"));
+        // The neon rows drop the filler: no "win" suffix, no hollow link.
+        assert!(!row("sess-01").contains("win"), "{}", row("sess-01"));
+        assert!(!row("sess-01").contains('◇'), "{}", row("sess-01"));
+    }
+
+    #[test]
+    fn split_prompt_finds_shell_prompts_only() {
+        assert_eq!(split_prompt("$ make"), Some(("", "$", " make")));
+        assert_eq!(
+            split_prompt("op@grid:~/src$ cargo test"),
+            Some(("op@grid:~/src", "$", " cargo test"))
+        );
+        assert_eq!(
+            split_prompt("root@box:/# ls"),
+            Some(("root@box:/", "#", " ls"))
+        );
+        assert_eq!(split_prompt("  ❯ ls"), Some(("  ", "❯", " ls")));
+        assert_eq!(split_prompt("sh-5.3$"), Some(("sh-5.3", "$", "")));
+        assert_eq!(split_prompt("# a comment"), None);
+        assert_eq!(split_prompt("costs $ 5"), None);
+        assert_eq!(split_prompt("echo $HOME"), None);
+        assert_eq!(split_prompt("100% done"), None);
+        assert_eq!(split_prompt("plain output"), None);
+    }
+
+    #[test]
+    fn feed_lights_up_prompts() {
+        let mut app = App::new(sessions(2), &Config::default());
+        app.preview = Some(String::from("ok\nop@grid$ make"));
+        let buf = render(&still(), &app, 120, 32, 5.0);
+        let (x, y) = (0..120)
+            .flat_map(|x| (0..32).map(move |y| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "$")
+            .expect("prompt rendered");
+        let pal = Palette::with_truecolor(&Theme::default(), true);
+        assert_eq!(buf[(x, y)].fg, pal.c(pal.pink), "sigil not lit");
+        assert_eq!(buf[(x - 1, y)].fg, pal.c(pal.purple), "host not violet");
+    }
+
+    /// A modal fades the frame behind it.
+    #[test]
+    fn modal_scrim_dims_the_frame() {
+        let mut app = App::new(sessions(3), &Config::default());
+        let plain = render(&still(), &app, 120, 32, 5.0);
+        app.enter_kill_confirm();
+        let dimmed = render(&still(), &app, 120, 32, 5.0);
+        let lum = |c: Color| match c {
+            Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            other => panic!("expected rgb, got {other:?}"),
+        };
+        // The "AUTO-ATTACH" box title sits well outside the card.
+        let y = (0..32)
+            .find(|&y| {
+                (0..120)
+                    .map(|x| plain[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("AUTO-ATTACH")
+            })
+            .expect("gauge title");
+        let x = (0..120).find(|&x| plain[(x, y)].symbol() == "A").unwrap();
+        assert!(lum(dimmed[(x, y)].fg) * 2 < lum(plain[(x, y)].fg));
+    }
+
+    #[test]
+    fn status_counts_only_without_the_banner() {
+        let app = App::new(sessions(3), &Config::default());
+        let full = dump(&render(&ui(), &app, 120, 32, 5.0));
+        let status = full.lines().nth(3).unwrap_or("");
+        assert!(status.contains("SELECT TARGET"), "{full}");
+        assert!(!status.contains("SESSIONS"), "counts repeated: {status}");
+        let short = dump(&render(&ui(), &app, 120, 16, 5.0));
+        assert!(short.contains("3 SESSIONS · 0 LINKED"), "{short}");
+    }
+
+    #[test]
+    fn footer_keys_sit_on_keycaps() {
+        let app = App::new(sessions(3), &Config::default());
+        let buf = render(&still(), &app, 120, 32, 5.0);
+        let y = 31;
+        let line: String = (0..120).map(|x| buf[(x, y)].symbol()).collect();
+        assert!(line.contains(" ? ") && line.contains("help"), "{line}");
+        let x = (0..120).find(|&x| buf[(x, y)].symbol() == "?").unwrap();
+        let cap = buf[(x, y)].bg;
+        assert_ne!(cap, buf[(x + 3, y)].bg, "no keycap behind '?'");
+        assert_eq!(cap, buf[(x - 1, y)].bg, "keycap is padded");
     }
 
     #[test]

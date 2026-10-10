@@ -45,8 +45,9 @@ without you lifting a finger.
 - **Live pane feed** — the newest lines of the highlighted session's pane,
   refreshed every second, or `Tab` for a per-window summary.
 - **Two looks** — *cyberpunk*, a neon HUD with gradient heavy-line
-  panels, a glitching block-letter banner, CRT scanlines and a shimmering
-  auto-attach gauge (truecolor with an automatic 256-colour fallback); or
+  panels, a glitching pixel-letter banner, signal meters for session
+  activity, CRT scanlines and a shimmering auto-attach gauge (truecolor
+  with an automatic 256-colour fallback); or
   *classic*, a plain look in your terminal's own colours with thin borders
   and no effects. The installer asks which you want; switch any time with
   `style` in the config. Every colour is themable on top of either.
